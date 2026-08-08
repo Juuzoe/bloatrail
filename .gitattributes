@@ -1,0 +1,6 @@
+# Normalise line endings in the repository; check out native on each platform.
+* text=auto eol=lf
+
+# Never touch binary assets.
+*.png binary
+*.ico binary
