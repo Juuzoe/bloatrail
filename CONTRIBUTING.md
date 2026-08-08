@@ -12,7 +12,8 @@ cargo build
 cargo test
 ```
 
-Rust 1.82 or newer. No other tooling is required.
+Rust 1.85 or newer for the CLI, 1.86 for the desktop app. No other tooling is
+required.
 
 ## Before you open a pull request
 

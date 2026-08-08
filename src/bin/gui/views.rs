@@ -88,6 +88,7 @@ fn dim(ui: &egui::Ui, text: impl Into<String>) -> RichText {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        #[cfg(feature = "screenshots")]
         self.drive_shot(ctx);
         if self.is_scanning() || self.cleaning {
             ctx.request_repaint_after(std::time::Duration::from_millis(120));

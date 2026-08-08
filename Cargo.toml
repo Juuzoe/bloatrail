@@ -3,7 +3,10 @@ name = "bloatrail"
 version = "0.2.0"
 default-run = "bloatrail"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.85"
+# MSRV-aware resolution: prefer dependency versions that still build on
+# `rust-version` rather than whatever the registry published most recently.
+resolver = "3"
 authors = ["Maksym Gavrylenko"]
 description = "A developer-aware disk space analyser and safe cleanup tool"
 documentation = "https://docs.rs/bloatrail"
@@ -32,7 +35,10 @@ required-features = ["gui"]
 
 [features]
 default = []
-gui = ["dep:eframe", "dep:rfd", "dep:image"]
+gui = ["dep:eframe", "dep:rfd"]
+# The self-screenshot harness used to produce docs/screenshots. It pulls in a
+# PNG encoder that the shipped app has no use for, so it stays opt-in.
+screenshots = ["gui", "dep:png"]
 
 [dependencies]
 anstream = "0.6"
@@ -45,7 +51,7 @@ clap_complete = "4"
 ctrlc = "3"
 dirs = "5"
 eframe = { version = "0.29", optional = true }
-image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+png = { version = "0.17", optional = true }
 rayon = "1"
 rfd = { version = "0.15", optional = true }
 serde = { version = "1", features = ["derive"] }

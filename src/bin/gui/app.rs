@@ -130,6 +130,7 @@ pub struct App {
     /// The user asked to close while a removal was running; close when done.
     pub close_after_clean: bool,
     /// Scripted self-screenshot driver; `None` in normal runs.
+    #[cfg(feature = "screenshots")]
     pub shot: Option<crate::shot::ShotDriver>,
 
     phase: Phase,
@@ -161,6 +162,7 @@ impl App {
             cleaning: false,
             error: None,
             close_after_clean: false,
+            #[cfg(feature = "screenshots")]
             shot: crate::shot::ShotDriver::from_env(),
             phase: Phase::Idle,
             tx,

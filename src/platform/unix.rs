@@ -45,7 +45,9 @@ pub fn is_reparse_point(meta: &Metadata) -> bool {
 }
 
 /// The device number identifying the filesystem an entry lives on.
+///
+/// `MetadataExt::dev` returns `u64` on every Unix target, so no cast is needed.
 #[must_use]
 pub fn volume_id(_path: &Path, meta: &Metadata) -> Option<u64> {
-    Some(meta.dev() as u64)
+    Some(meta.dev())
 }

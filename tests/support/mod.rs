@@ -14,25 +14,34 @@ use bloatrail::scanner::{self, ScanOptions, ScanResult};
 
 /// A temporary directory tree that cleans itself up.
 pub struct Fixture {
-    dir: tempfile::TempDir,
+    /// Kept alive so the directory is removed on drop.
+    _dir: tempfile::TempDir,
+    root: PathBuf,
 }
 
 impl Fixture {
     /// Create an empty fixture.
     pub fn new() -> Self {
-        Fixture {
-            dir: tempfile::tempdir().expect("temporary directory"),
-        }
+        let dir = tempfile::tempdir().expect("temporary directory");
+        // The scanner canonicalises its root, so every path a test compares
+        // against has to be canonical too. This matters wherever the system
+        // temp directory is not already in canonical form: macOS reaches it
+        // through the `/var` -> `/private/var` symlink, and Windows CI runners
+        // expose it under an 8.3 short name (`RUNNER~1`). Without this, a test
+        // that builds an exclusion pattern or compares a path passes locally
+        // and fails there.
+        let root = scanner::canonical_root(dir.path()).expect("canonical fixture root");
+        Fixture { _dir: dir, root }
     }
 
-    /// The fixture root.
+    /// The fixture root, in the same canonical form the scanner reports.
     pub fn path(&self) -> &Path {
-        self.dir.path()
+        &self.root
     }
 
     /// Absolute path of a fixture-relative location.
     pub fn join(&self, relative: &str) -> PathBuf {
-        let mut path = self.dir.path().to_path_buf();
+        let mut path = self.root.clone();
         for part in relative.split('/') {
             path.push(part);
         }
@@ -106,7 +115,7 @@ impl Fixture {
 
     /// Scan with customised options.
     pub fn scan_with(&self, configure: impl FnOnce(&mut ScanOptions)) -> ScanResult {
-        let mut options = ScanOptions::new(self.dir.path());
+        let mut options = ScanOptions::new(&self.root);
         configure(&mut options);
         run_scan(options)
     }

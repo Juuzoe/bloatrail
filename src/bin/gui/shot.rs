@@ -33,12 +33,19 @@ enum Stage {
     Done,
 }
 
+/// Frames a single waiting stage may sit through before the run gives up.
+///
+/// Without this, a stage whose event never arrives (a scan that produced
+/// nothing to preview, say) would keep the window open forever.
+const WAIT_LIMIT: u32 = 2_000;
+
 /// Scripted sequence of stages after each capture completes.
 pub struct ShotDriver {
     dir: PathBuf,
     scan: Option<PathBuf>,
     stage: Stage,
     queue: Vec<Stage>,
+    waited: u32,
 }
 
 impl ShotDriver {
@@ -83,11 +90,19 @@ impl ShotDriver {
             scan,
             stage: Stage::Done,
             queue,
+            waited: 0,
         })
     }
 
     fn advance(&mut self) {
         self.stage = self.queue.pop().unwrap_or(Stage::Done);
+        self.waited = 0;
+    }
+
+    /// Count a frame spent waiting. `true` means the run has waited too long.
+    fn stalled(&mut self) -> bool {
+        self.waited += 1;
+        self.waited > WAIT_LIMIT
     }
 }
 
@@ -132,6 +147,8 @@ impl App {
                 if let Some(image) = images.first() {
                     save_png(image, &driver.dir.join(format!("{name}.png")));
                     driver.advance();
+                } else if driver.stalled() {
+                    driver.stage = Stage::Close;
                 }
             }
             Stage::StartScan => {
@@ -144,8 +161,8 @@ impl App {
             Stage::WaitReady => {
                 if self.bundle().is_some() {
                     driver.advance();
-                } else if !self.is_scanning() && self.error.is_some() {
-                    // The scan failed; capture nothing further, just close.
+                } else if (!self.is_scanning() && self.error.is_some()) || driver.stalled() {
+                    // The scan failed or never finished; close rather than hang.
                     driver.stage = Stage::Close;
                 }
             }
@@ -203,6 +220,10 @@ impl App {
             Stage::WaitReport => {
                 if !self.cleaning && self.last_report.is_some() {
                     driver.advance();
+                } else if !self.cleaning || driver.stalled() {
+                    // Nothing was selected, so no report is coming. Skip ahead
+                    // rather than waiting for an event that cannot arrive.
+                    driver.advance();
                 }
             }
             Stage::OpenConfirm => {
@@ -235,11 +256,19 @@ fn save_png(image: &egui::ColorImage, path: &std::path::Path) {
     for pixel in &image.pixels {
         raw.extend_from_slice(&[pixel.r(), pixel.g(), pixel.b(), pixel.a()]);
     }
-    let Some(buffer) = image::RgbaImage::from_raw(width as u32, height as u32, raw) else {
-        return;
-    };
+
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = buffer.save(path);
+    let Ok(file) = std::fs::File::create(path) else {
+        return;
+    };
+
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width as u32, height as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let Ok(mut writer) = encoder.write_header() else {
+        return;
+    };
+    let _ = writer.write_image_data(&raw);
 }

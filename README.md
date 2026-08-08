@@ -168,8 +168,10 @@ cargo build --release --features gui     # the CLI and the desktop app
 The binaries land in `target/release/`. Copy them onto your `PATH`, or install
 the CLI with `cargo install --path .`.
 
-Requires Rust 1.82 or newer. Nothing else: the Docker integration is optional
-and skips itself when Docker is absent.
+The CLI needs Rust 1.85 or newer; the desktop app needs 1.86, because its
+window and dialog dependencies ask for it. Both numbers are checked in CI
+against the committed lockfile. Nothing else is required: the Docker
+integration is optional and skips itself when Docker is absent.
 
 ---
 
@@ -649,9 +651,11 @@ Unix-only behaviour (hard links, symlink loops, permission-denied recovery) is
 covered by `#[cfg(unix)]` tests that create real links and real unreadable
 directories.
 
-The desktop app tests itself: set `BLOATRAIL_SHOT_DIR` and `BLOATRAIL_SHOT_SCAN`
-and it drives its own UI end to end, writing a PNG of each view before exiting.
-The screenshots on this page were produced that way.
+The desktop app tests itself. Build it with `--features screenshots`, set
+`BLOATRAIL_SHOT_DIR` and `BLOATRAIL_SHOT_SCAN`, and it drives its own UI end to
+end, writing a PNG of each view before exiting. The screenshots on this page
+were produced that way. The harness sits behind its own feature so the shipped
+app carries no PNG encoder.
 
 ---
 

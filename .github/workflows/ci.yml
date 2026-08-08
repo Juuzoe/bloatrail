@@ -66,14 +66,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.82.0
+      - uses: dtolnay/rust-toolchain@1.85.0
       - uses: Swatinem/rust-cache@v2
-      # The committed lockfile may pin dependency versions that require a newer
-      # compiler than Bloatrail itself does. Removing it lets Cargo re-resolve
-      # against the MSRV toolchain, so this job checks *our* minimum rather than
-      # our dependencies' latest.
-      - run: rm -f Cargo.lock
-      - run: cargo check --all-targets
+      # `--locked` is the point of this job. Re-resolving would pull whatever
+      # the registry offers today, and the ecosystem's latest releases move
+      # their own MSRV faster than this crate does; the check would then
+      # measure our dependencies rather than us. The committed lockfile is the
+      # dependency set users get, so it is the one worth testing.
+      #
+      # Default features only: the desktop app's tree (eframe, rfd) needs 1.86,
+      # which the README states separately.
+      - run: cargo check --all-targets --locked
 
   docs:
     name: rustdoc

@@ -257,9 +257,22 @@ mod unix_only {
         std::os::unix::fs::symlink(fixture.join("real"), fixture.join("alias")).unwrap();
 
         let scan = fixture.scan();
-        assert_eq!(
-            scan.totals.bytes, 4096,
-            "following the link would double-count the data"
+
+        // The link itself is counted, and a symlink's own size is the length of
+        // the path it stores, so the total is 4096 plus a few dozen bytes. What
+        // must not happen is the target being counted twice.
+        assert!(
+            scan.totals.bytes >= 4096,
+            "the real data should still be counted"
+        );
+        assert!(
+            scan.totals.bytes < 2 * 4096,
+            "following the link would double-count the data, got {}",
+            scan.totals.bytes
+        );
+        assert!(
+            node_named(&scan, "alias").is_none(),
+            "a symlinked directory must not become a node in the tree"
         );
     }
 

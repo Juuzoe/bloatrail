@@ -11,6 +11,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
+#[cfg(feature = "screenshots")]
 mod shot;
 mod views;
 
