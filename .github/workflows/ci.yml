@@ -61,22 +61,34 @@ jobs:
       - name: Doctests
         run: cargo test --doc --verbose
 
+  # Both numbers the README quotes get checked, because a stated MSRV nobody
+  # tests is a guess. The CLI and the desktop app have different minimums:
+  # eframe and rfd pull in crates that ask for more than the CLI needs.
   msrv:
-    name: minimum supported Rust version
+    name: MSRV ${{ matrix.rust }} (${{ matrix.what }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rust: "1.85.0"
+            what: CLI
+            args: --all-targets
+          - rust: "1.86.0"
+            what: desktop app
+            args: --features gui
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@v2
       # `--locked` is the point of this job. Re-resolving would pull whatever
-      # the registry offers today, and the ecosystem's latest releases move
-      # their own MSRV faster than this crate does; the check would then
-      # measure our dependencies rather than us. The committed lockfile is the
+      # the registry offers today, and the ecosystem's latest releases raise
+      # their own MSRV faster than this crate does, so the check would measure
+      # our dependencies rather than us. The committed lockfile is the
       # dependency set users get, so it is the one worth testing.
-      #
-      # Default features only: the desktop app's tree (eframe, rfd) needs 1.86,
-      # which the README states separately.
-      - run: cargo check --all-targets --locked
+      - run: cargo check --locked ${{ matrix.args }}
 
   docs:
     name: rustdoc
