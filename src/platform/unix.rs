@@ -51,3 +51,18 @@ pub fn is_reparse_point(meta: &Metadata) -> bool {
 pub fn volume_id(_path: &Path, meta: &Metadata) -> Option<u64> {
     Some(meta.dev())
 }
+
+/// The identity facts one `stat` reveals about a file.
+///
+/// Two paths with the same `id` are hardlinks of one inode: the same bytes on
+/// disk, reachable under two names. Inode 0 cannot be trusted to distinguish
+/// files, so it degrades the identity to `None` while the link count — which
+/// is meaningful regardless — survives.
+#[must_use]
+pub fn file_identity(path: &Path) -> Option<super::FileIdentity> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some(super::FileIdentity {
+        id: (meta.ino() != 0).then(|| (meta.dev(), meta.ino())),
+        links: meta.nlink().max(1),
+    })
+}

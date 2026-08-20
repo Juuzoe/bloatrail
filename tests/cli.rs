@@ -367,6 +367,88 @@ fn duplicates_finds_identical_files_and_refuses_to_act() {
 }
 
 #[test]
+fn duplicates_folds_hardlinks_out_of_the_reclaim_figure() {
+    let fixture = Fixture::new();
+    let payload = vec![9u8; 64 * 1024];
+    fixture.write("keep/original.bin", &payload);
+    fixture.write("elsewhere/copy.bin", &payload);
+    if let Err(error) = std::fs::hard_link(
+        fixture.join("keep/original.bin"),
+        fixture.join("keep/alias.bin"),
+    ) {
+        // The filesystem refused to create a hardlink; nothing to test. A
+        // missing source would be a test bug, though, and must not skip.
+        assert!(
+            fixture.join("keep/original.bin").exists(),
+            "hard_link failed for a missing source: {error}"
+        );
+        return;
+    }
+    let state = Fixture::new();
+
+    let output = run(
+        state.path(),
+        &[
+            "duplicates",
+            &fixture.path().to_string_lossy(),
+            "--min-file-size",
+            "1KB",
+            "--no-progress",
+        ],
+    );
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(
+        text.contains("64 KB reclaimable"),
+        "three paths but two copies: exactly one file's worth is reclaimable\n{text}"
+    );
+    assert!(
+        text.contains("hardlink of the copy above"),
+        "the extra name must be labelled\n{text}"
+    );
+    assert!(
+        text.contains("also named by the hardlink below"),
+        "the head of a multi-name copy must state its deletion unit\n{text}"
+    );
+    assert!(text.contains("1 hardlinked path folded"), "{text}");
+
+    let json = run(
+        state.path(),
+        &[
+            "duplicates",
+            &fixture.path().to_string_lossy(),
+            "--min-file-size",
+            "1KB",
+            "--json",
+        ],
+    );
+    assert!(json.status.success());
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout(&json)).expect("output should be valid JSON");
+    assert_eq!(document["hardlinks"], 1);
+    assert_eq!(document["reclaimable"], 64 * 1024);
+    let group = &document["groups"][0];
+    assert_eq!(group["reclaimable"], 64 * 1024);
+    assert_eq!(
+        group["paths"].as_array().map(Vec::len),
+        Some(3),
+        "every path is still listed"
+    );
+    assert_eq!(
+        group["copies"].as_array().map(Vec::len),
+        Some(2),
+        "two pieces of storage"
+    );
+    for copy in group["copies"].as_array().unwrap() {
+        assert!(copy["paths"].is_array());
+        assert_eq!(
+            copy["linked_elsewhere"], false,
+            "every name of every copy sits inside the search"
+        );
+    }
+}
+
+#[test]
 fn doctor_runs_without_changing_anything() {
     let fixture = Fixture::new();
     sample(&fixture);

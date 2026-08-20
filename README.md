@@ -417,13 +417,46 @@ The search is staged so that almost nothing gets read:
 1. **Group by size.** Different sizes cannot be identical, and size comes free
    from the directory walk.
 2. **Discard unique sizes.** This removes most files without reading a byte.
-3. **Partial hash.** BLAKE3 over the first and last 16 KiB of the survivors;
+3. **Fold hardlinks.** Paths that share a storage identity are one file under
+   several names. They collapse into a single copy without reading anything,
+   and only one name per copy is ever hashed.
+4. **Partial hash.** BLAKE3 over the first and last 16 KiB of the survivors;
    files under 32 KiB are read in full at this stage, which is what makes the
    next step safe to skip for them.
-4. **Full hash.** Only groups that still collide are read end to end.
+5. **Full hash.** Only groups that still collide are read end to end.
 
-A reported duplicate is a byte-for-byte match. Bloatrail never deletes
-duplicates: which copy should survive is a judgement only you can make.
+Hardlinks get folded because counting names overstates what deletion frees.
+pnpm links every package from its store into each project's `node_modules`,
+and Cargo links final binaries inside `target`, so a developer tree is full of
+files with several names and one body. Bloatrail counts bodies:
+
+```
+$ bloatrail duplicates C:\Projects --include-hidden
+
+Duplicate files
+
+Group 1 — 18 MB reclaimable
+  C:\Projects\.pnpm-store\v3\files\react-dom.js (also named by the 2 hardlinks below — deleting one name frees nothing)
+  C:\Projects\admin-panel\node_modules\react-dom\cjs.js (hardlink of the copy above — frees nothing)
+  C:\Projects\web-app\node_modules\react-dom\cjs.js (hardlink of the copy above — frees nothing)
+  C:\Projects\backups\react-dom-copy.js
+
+4 candidate files compared, 2 read in full, 2 hardlinked paths folded
+Bloatrail never deletes duplicates automatically: only you know which copy matters.
+```
+
+Four names, two bodies, and the stray copy in `backups` is the only thing
+worth deleting. A copy can also have names the search never saw, in an
+excluded directory or beyond the scanned root. Bloatrail reads the file's link
+count, marks such copies with `more hardlink names than shown`, and leaves
+them out of the reclaimable figure, because deleting their listed names frees
+nothing.
+
+A reported duplicate is a byte-for-byte match. Copy-on-write clones (macOS
+Finder duplicates, `cp --reflink` on Linux) share storage without hardlinks;
+Bloatrail cannot see that from metadata and counts them as ordinary copies.
+Bloatrail never deletes duplicates: which copy should survive is a judgement
+only you can make.
 
 ---
 

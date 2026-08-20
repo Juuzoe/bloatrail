@@ -16,17 +16,34 @@ use crate::analysis::domain::{
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{disk_usage, is_reparse_point, volume_id};
+pub use windows::{disk_usage, file_identity, is_reparse_point, volume_id};
 
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
-pub use unix::{disk_usage, is_reparse_point, volume_id};
+pub use unix::{disk_usage, file_identity, is_reparse_point, volume_id};
 
 #[cfg(not(any(windows, unix)))]
 mod fallback;
 #[cfg(not(any(windows, unix)))]
-pub use fallback::{disk_usage, is_reparse_point, volume_id};
+pub use fallback::{disk_usage, file_identity, is_reparse_point, volume_id};
+
+/// What the filesystem reveals about a file's on-disk identity.
+///
+/// The two facts are deliberately separate, because filesystems can supply one
+/// without the other: a link count with an untrustworthy file ID (ReFS reports
+/// an all-ones marker for IDs that do not fit in 64 bits) still tells a caller
+/// the file has several names, even though it cannot say which paths they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileIdentity {
+    /// A (volume, file) pair: two paths with the same pair are the same bytes
+    /// on disk under two names. `None` when the filesystem's file IDs cannot
+    /// be trusted to distinguish files.
+    pub id: Option<(u64, u64)>,
+    /// How many directory entries point at the file in total — including names
+    /// outside whatever set the caller happens to be looking at. At least 1.
+    pub links: u64,
+}
 
 /// Free and total capacity of the filesystem holding a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1234,6 +1251,45 @@ mod tests {
             assert!(known.is_protected(&home), "home must be protected");
             assert_eq!(known.display(&home), "~");
         }
+    }
+
+    #[test]
+    fn file_identity_reports_link_counts_and_matches_hardlinked_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let single = temp.path().join("single.bin");
+        std::fs::write(&single, b"payload").unwrap();
+
+        let lone = file_identity(&single).expect("a plain file must be readable");
+        assert_eq!(lone.links, 1, "one directory entry so far");
+
+        let linked = temp.path().join("linked.bin");
+        if let Err(error) = std::fs::hard_link(&single, &linked) {
+            // The filesystem refused; nothing to verify here. A missing source
+            // would be a test bug, though, and must not skip.
+            assert!(
+                single.exists(),
+                "hard_link failed for a missing source: {error}"
+            );
+            return;
+        }
+        let a = file_identity(&single).expect("still readable");
+        let b = file_identity(&linked).expect("the new name is readable too");
+        assert_eq!(a.links, 2, "the file now has exactly two names");
+        assert_eq!(a, b, "both names must resolve to the same storage");
+        assert!(
+            a.id.is_some(),
+            "an ordinary local filesystem should supply a usable file ID"
+        );
+
+        let other = temp.path().join("other.bin");
+        std::fs::write(&other, b"payload").unwrap();
+        let other_link = temp.path().join("other-link.bin");
+        std::fs::hard_link(&other, &other_link).unwrap();
+        assert_ne!(
+            file_identity(&other).and_then(|identity| identity.id),
+            a.id,
+            "different files must have different identities"
+        );
     }
 
     #[test]

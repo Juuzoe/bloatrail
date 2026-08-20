@@ -1,18 +1,35 @@
 //! Windows-specific filesystem facts.
 //!
-//! Bloatrail deliberately avoids a heavyweight Win32 binding: the three
-//! primitives it needs (free space, reparse-point detection and a volume
-//! identity) are a single FFI call plus two attribute checks.
+//! Bloatrail deliberately avoids a heavyweight Win32 binding: the four
+//! primitives it needs (free space, reparse-point detection, a volume identity
+//! and a file identity) are two FFI calls plus two attribute checks.
 
 use std::fs::Metadata;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 
 use super::DiskUsage;
 
 /// `FILE_ATTRIBUTE_REPARSE_POINT` from `winnt.h`.
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+/// `BY_HANDLE_FILE_INFORMATION` from `fileapi.h`. The three `FILETIME` fields
+/// are kept as `u32` pairs because nothing here reads them.
+#[repr(C)]
+struct ByHandleFileInformation {
+    file_attributes: u32,
+    creation_time: [u32; 2],
+    last_access_time: [u32; 2],
+    last_write_time: [u32; 2],
+    volume_serial_number: u32,
+    file_size_high: u32,
+    file_size_low: u32,
+    number_of_links: u32,
+    file_index_high: u32,
+    file_index_low: u32,
+}
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -21,6 +38,11 @@ extern "system" {
         free_bytes_available_to_caller: *mut u64,
         total_number_of_bytes: *mut u64,
         total_number_of_free_bytes: *mut u64,
+    ) -> i32;
+
+    fn GetFileInformationByHandle(
+        file: std::os::windows::io::RawHandle,
+        file_information: *mut ByHandleFileInformation,
     ) -> i32;
 }
 
@@ -84,4 +106,33 @@ pub fn volume_id(path: &Path, _meta: &Metadata) -> Option<u64> {
         }
     }
     Some(hasher.finish())
+}
+
+/// The identity facts one handle query reveals about a file.
+///
+/// Two paths with the same `id` are hardlinks of one NTFS file record: the
+/// same bytes on disk under two names. A file ID of all zeros, or the all-ones
+/// marker ReFS reports for IDs that do not fit in 64 bits, cannot be trusted
+/// to distinguish files, so it degrades the identity to `None` while the link
+/// count — which is meaningful regardless — survives. Costs an open handle, so
+/// callers should reserve it for files already suspected of colliding.
+#[must_use]
+pub fn file_identity(path: &Path) -> Option<super::FileIdentity> {
+    let file = std::fs::File::open(path).ok()?;
+    // SAFETY: zero is a valid bit pattern for a struct of plain integers.
+    let mut info: ByHandleFileInformation = unsafe { std::mem::zeroed() };
+
+    // SAFETY: the handle is open for the duration of the call and `info` is a
+    // live, correctly laid out `BY_HANDLE_FILE_INFORMATION`.
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) };
+    if ok == 0 {
+        return None;
+    }
+
+    let index = (u64::from(info.file_index_high) << 32) | u64::from(info.file_index_low);
+    Some(super::FileIdentity {
+        id: (index != 0 && index != u64::MAX)
+            .then_some((u64::from(info.volume_serial_number), index)),
+        links: u64::from(info.number_of_links).max(1),
+    })
 }

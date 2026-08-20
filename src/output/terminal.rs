@@ -642,6 +642,18 @@ pub fn duplicates(report: &DuplicateReport, theme: &Theme, known: &KnownPaths) -
 
     if report.groups.is_empty() {
         let _ = writeln!(out, "{}", theme.dim("No duplicates found."));
+        if report.hardlinks > 0 {
+            let _ = writeln!(
+                out,
+                "{}",
+                theme.dim(&format!(
+                    "Folded {} hardlinked {}: extra names for storage already counted \
+                     once. Removing a hardlink frees nothing.",
+                    format_count(report.hardlinks),
+                    plural(report.hardlinks, "path"),
+                ))
+            );
+        }
         return out;
     }
 
@@ -653,21 +665,59 @@ pub fn duplicates(report: &DuplicateReport, theme: &Theme, known: &KnownPaths) -
             theme.dim("—"),
             theme.heading(&format!("{} reclaimable", ByteSize(group.reclaimable())))
         );
-        for path in &group.paths {
-            let _ = writeln!(out, "  {}", known.display(path));
+        for copy in &group.copies {
+            let mut names = copy.paths.iter();
+            if let Some(first) = names.next() {
+                // The head line carries the copy's deletion semantics, so that
+                // no listed name reads as freeing space it cannot free.
+                if copy.linked_elsewhere() {
+                    let _ = writeln!(
+                        out,
+                        "  {} {}",
+                        known.display(first),
+                        theme.dim("(more hardlink names than shown — deleting it frees nothing)")
+                    );
+                } else if copy.paths.len() > 1 {
+                    let extras = copy.paths.len() - 1;
+                    let note = if extras == 1 {
+                        "(also named by the hardlink below — deleting one name frees nothing)"
+                            .to_string()
+                    } else {
+                        format!(
+                            "(also named by the {extras} hardlinks below — deleting one name frees nothing)"
+                        )
+                    };
+                    let _ = writeln!(out, "  {} {}", known.display(first), theme.dim(&note));
+                } else {
+                    let _ = writeln!(out, "  {}", known.display(first));
+                }
+            }
+            for extra in names {
+                let _ = writeln!(
+                    out,
+                    "  {} {}",
+                    known.display(extra),
+                    theme.dim("(hardlink of the copy above — frees nothing)")
+                );
+            }
         }
         let _ = writeln!(out);
     }
 
-    let _ = writeln!(
-        out,
-        "{}",
-        theme.dim(&format!(
-            "{} candidate files compared, {} read in full",
-            format_count(report.candidates),
-            format_count(report.hashed)
-        ))
+    let mut tally = format!(
+        "{} candidate files compared, {} read in full",
+        format_count(report.candidates),
+        format_count(report.hashed)
     );
+    if report.hardlinks > 0 {
+        let _ = write!(
+            tally,
+            ", {} hardlinked {} folded",
+            format_count(report.hardlinks),
+            plural(report.hardlinks, "path"),
+        );
+    }
+    let _ = writeln!(out, "{}", theme.dim(&tally));
     let _ = writeln!(
         out,
         "{}",

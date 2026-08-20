@@ -525,12 +525,18 @@ pub struct DuplicatesDocument {
     pub root: String,
     /// Groups of identical files.
     pub groups: Vec<DuplicateGroupView>,
-    /// Bytes recoverable by keeping one copy of each group.
+    /// Bytes the listed groups can free: every removable copy counted after
+    /// hardlink names are folded and copies pinned by unlisted names are set
+    /// aside.
     pub reclaimable: u64,
     /// Files compared after the size filter.
     pub candidates: u64,
     /// Files read in full.
     pub hashed: u64,
+    /// Paths that were extra hardlinks of another candidate and so count no
+    /// storage of their own.
+    #[serde(default)]
+    pub hardlinks: u64,
 }
 
 /// One duplicate group.
@@ -538,10 +544,28 @@ pub struct DuplicatesDocument {
 pub struct DuplicateGroupView {
     /// Size of each copy.
     pub size: u64,
-    /// Bytes freed by keeping one copy.
+    /// Bytes freed by deduplicating the group. Extra hardlink names do not
+    /// count, and neither do copies pinned by names outside the search.
+    /// Storage shared without hardlinks — APFS and btrfs clones, ReFS block
+    /// sharing — is not detected and counts as distinct.
     pub reclaimable: u64,
-    /// The paths.
+    /// Every path in the group, hardlinks included.
     pub paths: Vec<String>,
+    /// The same paths grouped by storage.
+    #[serde(default)]
+    pub copies: Vec<DuplicateCopyView>,
+}
+
+/// One piece of storage within a duplicate group.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuplicateCopyView {
+    /// The names found for this storage; several means hardlinks.
+    pub paths: Vec<String>,
+    /// Whether the file has more names than the listed ones — outside the
+    /// search, excluded, or unmatchable because the filesystem's file IDs
+    /// cannot be trusted. Deleting the listed paths of such a copy frees
+    /// nothing.
+    pub linked_elsewhere: bool,
 }
 
 /// Build the `duplicates` document.
@@ -556,12 +580,21 @@ pub fn duplicates_document(root: &Path, report: &DuplicateReport) -> DuplicatesD
             .map(|group| DuplicateGroupView {
                 size: group.size,
                 reclaimable: group.reclaimable(),
-                paths: group.paths.iter().map(|p| display(p)).collect(),
+                paths: group.paths().map(|p| display(p)).collect(),
+                copies: group
+                    .copies
+                    .iter()
+                    .map(|copy| DuplicateCopyView {
+                        paths: copy.paths.iter().map(|p| display(p)).collect(),
+                        linked_elsewhere: copy.linked_elsewhere(),
+                    })
+                    .collect(),
             })
             .collect(),
         reclaimable: report.reclaimable,
         candidates: report.candidates,
         hashed: report.hashed,
+        hardlinks: report.hardlinks,
     }
 }
 
