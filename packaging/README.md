@@ -25,14 +25,14 @@ To submit it to the community bucket, open a pull request against
 
 ## Homebrew (macOS and Linux)
 
-A formula URL installs without a tap:
+Homebrew removed installation from a formula URL, so this one needs a tap
+before anybody can use it. Create a repository called `homebrew-tap`, put
+`bloatrail.rb` in its `Formula/` directory, and the install command becomes:
 
 ```bash
-brew install --formula https://raw.githubusercontent.com/Juuzoe/bloatrail/main/packaging/homebrew/bloatrail.rb
+brew install juuzoe/tap/bloatrail
 ```
 
-For `brew install juuzoe/tap/bloatrail`, create a repository named
-`homebrew-tap` and copy `bloatrail.rb` into its `Formula/` directory.
 homebrew-core has a notability requirement, so it comes after the project has
 users, not before.
 

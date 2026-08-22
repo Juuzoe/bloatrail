@@ -5,119 +5,180 @@
 .DESCRIPTION
     irm https://raw.githubusercontent.com/Juuzoe/bloatrail/main/install.ps1 | iex
 
-    Downloads the release archive for this machine, verifies its checksum and
-    copies the CLI and desktop app into place. Nothing is installed system-wide
-    and no registry keys are written.
+    Downloads the release archive for this machine, checks it against the
+    published checksum and copies the binaries into place. Nothing is installed
+    system-wide and no registry keys are written beyond the user's PATH.
 
-.PARAMETER Version
-    Release tag to install, for example v0.3.0. Defaults to the latest release.
+    Piping to iex leaves no way to pass parameters, so the options are
+    environment variables:
 
-.PARAMETER InstallDir
-    Where to put the binaries. Defaults to %LOCALAPPDATA%\Programs\Bloatrail.
+      $env:BLOATRAIL_VERSION      = 'v0.3.0'   # install a specific tag
+      $env:BLOATRAIL_INSTALL_DIR  = 'C:\tools' # install somewhere else
+      $env:BLOATRAIL_NO_VERIFY    = '1'        # proceed without a checksum
 #>
-[CmdletBinding()]
-param(
-    [string] $Version = $env:BLOATRAIL_VERSION,
-    [string] $InstallDir = $env:BLOATRAIL_INSTALL_DIR
-)
 
-$ErrorActionPreference = 'Stop'
-Set-StrictMode -Version Latest
+# Everything lives in a function so that `iex` does not leave StrictMode and
+# ErrorActionPreference altered in the caller's session: both are scoped here.
+function Install-Bloatrail {
+    [CmdletBinding()]
+    param(
+        [string] $Version,
+        [string] $InstallDir,
+        [switch] $NoVerify
+    )
 
-$Repo = 'Juuzoe/bloatrail'
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
 
-function Write-Info { param([string] $Message) Write-Host $Message }
+    $repo = 'Juuzoe/bloatrail'
 
-# TLS 1.2 is not the default on Windows PowerShell 5.1, and GitHub requires it.
-[Net.ServicePointManager]::SecurityProtocol =
-    [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    function Write-Info { param([string] $Message) Write-Host $Message }
 
-# --- what are we running on? -------------------------------------------------
+    # TLS 1.2 is not the default on Windows PowerShell 5.1, and GitHub requires it.
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-$arch = $env:PROCESSOR_ARCHITECTURE
-if ($env:PROCESSOR_ARCHITEW6432) { $arch = $env:PROCESSOR_ARCHITEW6432 }
+    # --- what are we running on? --------------------------------------------
 
-$target = switch ($arch) {
-    'AMD64' { 'x86_64-pc-windows-msvc' }
-    'ARM64' { 'aarch64-pc-windows-msvc' }
-    default {
-        throw "Unsupported processor architecture '$arch'. Build from source with: cargo install bloatrail"
-    }
-}
-
-# --- which release? ----------------------------------------------------------
-
-if (-not $Version) {
+    # PROCESSOR_ARCHITECTURE describes the *process*, so a 64-bit x64
+    # PowerShell emulated on an ARM64 machine reports AMD64. Ask the OS.
+    $target = $null
     try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -UseBasicParsing
-        $Version = $release.tag_name
-    } catch {
-        throw "Could not determine the latest version. Pass -Version, or see https://github.com/$Repo/releases"
-    }
-}
-
-if (-not $InstallDir) {
-    $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\Bloatrail'
-}
-
-$archive = "bloatrail-$Version-$target.zip"
-$url = "https://github.com/$Repo/releases/download/$Version/$archive"
-$temp = Join-Path ([IO.Path]::GetTempPath()) ("bloatrail-" + [Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $temp -Force | Out-Null
-
-try {
-    Write-Info "Downloading Bloatrail $Version for $target"
-    $zip = Join-Path $temp $archive
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
-    } catch {
-        throw "Could not download $url`nCheck https://github.com/$Repo/releases for the available builds."
-    }
-
-    # The release publishes one checksum file for every archive. A missing file
-    # is not fatal, but a mismatch is.
-    try {
-        $sums = Join-Path $temp 'SHA256SUMS'
-        Invoke-WebRequest -Uri "https://github.com/$Repo/releases/download/$Version/SHA256SUMS" -OutFile $sums -UseBasicParsing
-        $line = Select-String -Path $sums -Pattern ([regex]::Escape($archive)) | Select-Object -First 1
-        if ($line) {
-            $expected = ($line.Line -split '\s+')[0]
-            $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-            if ($actual -ne $expected.ToLower()) {
-                throw "Checksum mismatch for $archive`n  expected $expected`n  got      $actual"
-            }
-            Write-Info 'Checksum verified'
+        switch ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
+            'Arm64' { $target = 'aarch64-pc-windows-msvc' }
+            'X64'   { $target = 'x86_64-pc-windows-msvc' }
         }
-    } catch [System.Net.WebException] {
-        Write-Info 'No checksum file published for this release; skipping verification.'
+    } catch {
+        # Older hosts without RuntimeInformation fall through to the variables.
+    }
+    if (-not $target) {
+        $arch = $env:PROCESSOR_ARCHITECTURE
+        if ($env:PROCESSOR_ARCHITEW6432) { $arch = $env:PROCESSOR_ARCHITEW6432 }
+        $target = switch ($arch) {
+            'ARM64' { 'aarch64-pc-windows-msvc' }
+            'AMD64' { 'x86_64-pc-windows-msvc' }
+            default {
+                throw "Unsupported processor architecture '$arch'. Build from source with: cargo install --git https://github.com/$repo"
+            }
+        }
     }
 
-    Expand-Archive -Path $zip -DestinationPath $temp -Force
-    $payload = Join-Path $temp "bloatrail-$Version-$target"
-    if (-not (Test-Path $payload)) { throw "The archive did not contain the expected folder." }
+    # --- which release? ------------------------------------------------------
 
-    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    Get-ChildItem -Path $payload -Filter '*.exe' | ForEach-Object {
-        Copy-Item $_.FullName -Destination $InstallDir -Force
-        Write-Info "Installed $($_.Name)"
+    if (-not $Version) { $Version = $env:BLOATRAIL_VERSION }
+    if (-not $Version) {
+        try {
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -UseBasicParsing
+            $Version = $release.tag_name
+        } catch {
+            throw "Could not determine the latest version. Set `$env:BLOATRAIL_VERSION to a tag, or see https://github.com/$repo/releases"
+        }
     }
 
-    # Put it on PATH for future sessions, and this one.
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (-not $userPath) { $userPath = '' }
-    if (($userPath -split ';') -notcontains $InstallDir) {
-        $updated = if ($userPath.TrimEnd(';')) { $userPath.TrimEnd(';') + ';' + $InstallDir } else { $InstallDir }
-        [Environment]::SetEnvironmentVariable('Path', $updated, 'User')
-        Write-Info "Added $InstallDir to your PATH"
-    }
-    if (($env:Path -split ';') -notcontains $InstallDir) {
-        $env:Path = $env:Path.TrimEnd(';') + ';' + $InstallDir
-    }
+    if (-not $InstallDir) { $InstallDir = $env:BLOATRAIL_INSTALL_DIR }
+    if (-not $InstallDir) { $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\Bloatrail' }
+    if (-not $NoVerify) { $NoVerify = ($env:BLOATRAIL_NO_VERIFY -eq '1') }
 
-    Write-Info ''
-    Write-Info "Bloatrail $Version is installed in $InstallDir"
-    Write-Info 'Try it:  bloatrail scan'
-    Write-Info 'Desktop app:  bloatrail-gui'
-} finally {
-    Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
+    $archive = "bloatrail-$Version-$target.zip"
+    $url = "https://github.com/$repo/releases/download/$Version/$archive"
+    $temp = Join-Path ([IO.Path]::GetTempPath()) ("bloatrail-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $temp -Force | Out-Null
+
+    try {
+        Write-Info "Downloading Bloatrail $Version for $target"
+        $zip = Join-Path $temp $archive
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+        } catch {
+            throw "Could not download $url`nCheck https://github.com/$repo/releases for the available builds."
+        }
+
+        # Fetching the checksum file is allowed to fail; comparing against it is
+        # not. The two are separate so a mismatch can never be mistaken for a
+        # network problem and swallowed. Windows PowerShell and PowerShell 7
+        # raise different exception types, so the fetch catches everything.
+        $sums = Join-Path $temp 'SHA256SUMS'
+        $reason = $null
+        try {
+            Invoke-WebRequest -Uri "https://github.com/$repo/releases/download/$Version/SHA256SUMS" -OutFile $sums -UseBasicParsing
+        } catch {
+            $reason = 'the checksum file could not be downloaded'
+        }
+
+        if (-not $reason) {
+            $line = Select-String -Path $sums -Pattern ([regex]::Escape($archive)) | Select-Object -First 1
+            if (-not $line) {
+                $reason = "SHA256SUMS lists no entry for $archive"
+            } else {
+                $expected = (($line.Line -split '\s+') | Where-Object { $_ })[0]
+                $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+                if ($actual -ne $expected.ToLower()) {
+                    throw "Checksum mismatch for $archive`n  expected $expected`n  got      $actual`nThe download does not match what the release publishes. Nothing was installed."
+                }
+                Write-Info 'Checksum verified'
+            }
+        }
+
+        # Refuse rather than install something unchecked, unless told otherwise:
+        # skipping quietly would make a tampered download look like a normal one.
+        if ($reason) {
+            if (-not $NoVerify) {
+                throw "Cannot verify the download: $reason`nSet `$env:BLOATRAIL_NO_VERIFY = '1' to install anyway, or download the archive and check it by hand: https://github.com/$repo/releases"
+            }
+            Write-Warning "Installing without verifying the download: $reason"
+        }
+
+        Expand-Archive -Path $zip -DestinationPath $temp -Force
+        $payload = Join-Path $temp "bloatrail-$Version-$target"
+        if (-not (Test-Path $payload)) { throw 'The archive did not contain the expected folder.' }
+
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        $installed = @()
+        Get-ChildItem -Path $payload -Filter '*.exe' | ForEach-Object {
+            Copy-Item $_.FullName -Destination $InstallDir -Force
+            $installed += $_.Name
+            Write-Info "Installed $($_.Name)"
+        }
+        if (-not $installed) { throw 'The archive contained no executables.' }
+
+        Add-ToUserPath -Directory $InstallDir
+
+        Write-Info ''
+        Write-Info "Bloatrail $Version is installed in $InstallDir"
+        Write-Info 'Try it:  bloatrail scan'
+        if ($installed -contains 'bloatrail-gui.exe') {
+            Write-Info 'Desktop app:  bloatrail-gui'
+        }
+    } finally {
+        Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
+
+function Add-ToUserPath {
+    param([Parameter(Mandatory)] [string] $Directory)
+
+    # [Environment]::GetEnvironmentVariable expands %VAR% references, and
+    # writing the expanded result back would replace entries like
+    # %JAVA_HOME%\bin with whatever they happen to point at today. Read and
+    # write through the registry instead, preserving the value's kind.
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    try {
+        $current = $key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+        $kind = if ($key.GetValueNames() -contains 'Path') { $key.GetValueKind('Path') } else { 'ExpandString' }
+
+        $entries = @($current -split ';' | Where-Object { $_ })
+        if ($entries -notcontains $Directory) {
+            $key.SetValue('Path', (($entries + $Directory) -join ';'), $kind)
+            Write-Host "Added $Directory to your PATH"
+        }
+    } finally {
+        if ($key) { $key.Dispose() }
+    }
+
+    # Make it usable in this session too, so the next line of advice works.
+    if (($env:Path -split ';') -notcontains $Directory) {
+        $env:Path = $env:Path.TrimEnd(';') + ';' + $Directory
+    }
+}
+
+Install-Bloatrail

@@ -8,11 +8,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # A tag is public the moment it is pushed, so the cheapest check runs first:
+  # a tag that disagrees with Cargo.toml would publish archives named after a
+  # version the binaries inside do not report.
+  check-version:
+    name: Tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -euo pipefail
+          tag='${{ github.ref_name }}'
+          manifest=$(sed -n '/^\[package\]/,/^\[/ s/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)
+          echo "tag=$tag  Cargo.toml=$manifest"
+          if [ "$tag" != "v$manifest" ]; then
+            echo "::error::Tag $tag does not match version $manifest in Cargo.toml"
+            exit 1
+          fi
+
   # The archives come from the read-only build workflow, which the rehearsal
   # runs too, so what a tag publishes is what pull requests have been building
   # all along.
   build:
     name: Build
+    needs: check-version
     uses: ./.github/workflows/release-build.yml
     permissions:
       contents: read

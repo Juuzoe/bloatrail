@@ -32,17 +32,16 @@ curl -fsSL https://raw.githubusercontent.com/Juuzoe/bloatrail/main/install.sh | 
 irm https://raw.githubusercontent.com/Juuzoe/bloatrail/main/install.ps1 | iex
 ```
 
-**Package managers**
+**From source**
 
 ```sh
-brew install --formula https://raw.githubusercontent.com/Juuzoe/bloatrail/main/packaging/homebrew/bloatrail.rb
-scoop install https://raw.githubusercontent.com/Juuzoe/bloatrail/main/packaging/scoop/bloatrail.json
-cargo install --git https://github.com/Juuzoe/bloatrail --locked    # builds from source
+cargo install --git https://github.com/Juuzoe/bloatrail --locked
 ```
 
 Or take an archive from the [latest release](https://github.com/Juuzoe/bloatrail/releases/latest):
-Windows, macOS and Linux, on both x86 and ARM. Every archive is listed in
-`SHA256SUMS`, which the install scripts verify before writing anything.
+Windows, macOS and Linux, on both x86 and ARM. Every archive has a SHA-256 in
+`SHA256SUMS`, and the install scripts check it before writing anything; if the
+checksum cannot be fetched they stop rather than install unverified.
 
 Then point it at a directory:
 
@@ -208,8 +207,11 @@ follows is everything else.
 | Linux on ARM (Raspberry Pi 4 and 5, ARM servers) | `aarch64-unknown-linux-gnu.tar.gz` |
 
 The Linux x86 build is statically linked against musl, so it runs on any
-distribution whatever its glibc version. The Windows and macOS archives carry
-the desktop app next to the CLI.
+distribution whatever its glibc version, and the install script picks it.
+`x86_64-unknown-linux-gnu` is published alongside it for anyone who would
+rather link against the system glibc. The Windows and macOS archives carry the
+desktop app next to the CLI; the Linux archives do not, for the reason in
+[From source](#from-source) below.
 
 macOS quarantines anything downloaded through a browser. The install script is
 not affected; for a manual download, clear the flag:

@@ -118,9 +118,8 @@ def write_homebrew(version: str, sums: dict[str, str]) -> Path:
 #
 #   brew install {REPO.split("/")[0]}/tap/bloatrail
 #
-# or, without a tap:
-#
-#   brew install --formula https://raw.githubusercontent.com/{REPO}/main/packaging/homebrew/bloatrail.rb
+# Homebrew removed installation from a formula URL, so this file has to live in
+# a tap repository named homebrew-tap before anyone can install from it.
 class Bloatrail < Formula
   desc "Developer-aware disk analyser that explains what is safe to delete"
   homepage "https://github.com/{REPO}"
@@ -333,6 +332,16 @@ def main() -> None:
     version = sys.argv[1]
     if not version.startswith("v"):
         raise SystemExit("the version tag must start with 'v'")
+    # makepkg rejects a pkgver containing a hyphen, and Scoop and winget both
+    # want a plain version, so a prerelease tag would emit manifests that no
+    # package manager can read. Refuse rather than write them.
+    number = version.lstrip("v")
+    if not all(part.isdigit() for part in number.split(".")):
+        raise SystemExit(
+            f"{version} is not a plain release tag. Prerelease and build "
+            "metadata are not supported by every manifest format, so these "
+            "files are only generated for tags like v0.3.0."
+        )
 
     sums = checksums(version)
     print(f"{len(sums)} checksums read for {version}")

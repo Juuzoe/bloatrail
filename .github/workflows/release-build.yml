@@ -57,6 +57,7 @@ jobs:
           - os: windows-latest
             target: aarch64-pc-windows-msvc
             archive: zip
+            gui: true
 
     steps:
       - uses: actions/checkout@v4
@@ -121,8 +122,11 @@ jobs:
           if (Test-Path $gui) { Copy-Item $gui $staging }
           Copy-Item README.md, LICENSE $staging
           Compress-Archive -Path $staging -DestinationPath "$staging.zip"
-          (Get-FileHash "$staging.zip" -Algorithm SHA256).Hash.ToLower() + "  $staging.zip" |
-            Out-File -FilePath "$staging.zip.sha256" -Encoding ascii
+          # Written with an explicit LF: Out-File would end the line with CRLF,
+          # and the carriage return survives into the combined SHA256SUMS,
+          # where it breaks `shasum -c` and any anchored match on the filename.
+          $line = (Get-FileHash "$staging.zip" -Algorithm SHA256).Hash.ToLower() + "  $staging.zip`n"
+          [IO.File]::WriteAllText("$PWD/$staging.zip.sha256", $line, [Text.UTF8Encoding]::new($false))
           "ASSET=$staging.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # Only where the runner can execute what it just built. The macOS x86
