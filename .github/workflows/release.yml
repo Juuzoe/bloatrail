@@ -3,161 +3,26 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # Manual runs build every target and upload the archives as workflow
-  # artifacts without publishing anything, which is how a release is
-  # rehearsed before the tag exists.
-  workflow_dispatch:
-  # Same rehearsal, reached from `release-rehearsal.yml` when the packaging
-  # itself changes. Publishing is gated on a tag ref, so a call from a branch
-  # builds and verifies without releasing anything.
-  workflow_call:
-    secrets:
-      # Declared optional so a caller without it still starts: a reusable
-      # workflow may only read secrets its contract names.
-      CARGO_REGISTRY_TOKEN:
-        required: false
 
 env:
   CARGO_TERM_COLOR: always
 
-permissions:
-  contents: write
-
 jobs:
+  # The archives come from the read-only build workflow, which the rehearsal
+  # runs too, so what a tag publishes is what pull requests have been building
+  # all along.
   build:
-    name: ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            archive: tar.gz
-            native: true
-          # Statically linked against musl, so one file runs on any
-          # distribution regardless of its glibc version. This is the build
-          # the install script prefers on Linux.
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            archive: tar.gz
-            packages: musl-tools
-            native: true
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            archive: tar.gz
-            packages: gcc-aarch64-linux-gnu
-            linker: aarch64-linux-gnu-gcc
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            archive: tar.gz
-            gui: true
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            archive: tar.gz
-            gui: true
-            native: true
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive: zip
-            gui: true
-            native: true
-          - os: windows-latest
-            target: aarch64-pc-windows-msvc
-            archive: zip
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Install cross-compilation packages
-        if: matrix.packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ${{ matrix.packages }}
-
-      - name: Point Cargo at the cross linker
-        if: matrix.linker
-        run: |
-          target=$(echo '${{ matrix.target }}' | tr '[:lower:]-' '[:upper:]_')
-          echo "CARGO_TARGET_${target}_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
-
-      - name: Build the CLI
-        run: cargo build --release --locked --target ${{ matrix.target }}
-
-      # The desktop app ships where its window and dialog dependencies are part
-      # of the OS. On Linux they are not: the binary would need a matching GTK
-      # and X11 at runtime, which no single archive can promise across
-      # distributions, so Linux gets the CLI and builds the app from source.
-      - name: Build the desktop app
-        if: matrix.gui
-        run: cargo build --release --locked --target ${{ matrix.target }} --features gui
-
-      - name: Package (tar.gz)
-        if: matrix.archive == 'tar.gz'
-        run: |
-          set -euo pipefail
-          version='${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.sha) }}'
-          staging="bloatrail-${version}-${{ matrix.target }}"
-          mkdir -p "$staging"
-          cp "target/${{ matrix.target }}/release/bloatrail" "$staging/"
-          if [ -f "target/${{ matrix.target }}/release/bloatrail-gui" ]; then
-            cp "target/${{ matrix.target }}/release/bloatrail-gui" "$staging/"
-          fi
-          cp README.md LICENSE "$staging/"
-          tar czf "$staging.tar.gz" "$staging"
-          shasum -a 256 "$staging.tar.gz" > "$staging.tar.gz.sha256"
-          echo "ASSET=$staging.tar.gz" >> "$GITHUB_ENV"
-
-      - name: Package (zip)
-        if: matrix.archive == 'zip'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $version = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}' } else { "dev-${{ github.sha }}" }
-          $staging = "bloatrail-$version-${{ matrix.target }}"
-          New-Item -ItemType Directory -Force -Path $staging | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/bloatrail.exe" $staging
-          $gui = "target/${{ matrix.target }}/release/bloatrail-gui.exe"
-          if (Test-Path $gui) { Copy-Item $gui $staging }
-          Copy-Item README.md, LICENSE $staging
-          Compress-Archive -Path $staging -DestinationPath "$staging.zip"
-          (Get-FileHash "$staging.zip" -Algorithm SHA256).Hash.ToLower() + "  $staging.zip" |
-            Out-File -FilePath "$staging.zip.sha256" -Encoding ascii
-          "ASSET=$staging.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      # Only where the runner can execute what it just built. The macOS x86
-      # and both ARM cross builds have no interpreter here, so they are
-      # verified by the compiler and the archive contents alone. The binary is
-      # invoked directly rather than through `cargo run`, which would rebuild
-      # it without the `gui` feature and defeat the point.
-      - name: Check the binary runs
-        if: matrix.native
-        shell: bash
-        run: |
-          bin="target/${{ matrix.target }}/release/bloatrail"
-          [ -f "$bin" ] || bin="$bin.exe"
-          "$bin" --version
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: bloatrail-${{ matrix.target }}
-          path: |
-            ${{ env.ASSET }}
-            ${{ env.ASSET }}.sha256
+    name: Build
+    uses: ./.github/workflows/release-build.yml
+    permissions:
+      contents: read
 
   publish:
     name: Publish release
     needs: build
     runs-on: ubuntu-latest
-    if: github.ref_type == 'tag'
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -167,7 +32,7 @@ jobs:
           merge-multiple: true
 
       # One checksum file covering every asset is easier to verify than seven
-      # separate ones, and package managers read it directly.
+      # separate ones, and both install scripts read it directly.
       - name: Collect checksums
         run: |
           cd artifacts
@@ -186,7 +51,8 @@ jobs:
     name: Publish to crates.io
     needs: publish
     runs-on: ubuntu-latest
-    if: github.ref_type == 'tag'
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

@@ -2,31 +2,26 @@ name: Release rehearsal
 
 # A tag is public the moment it is pushed, so the release build gets exercised
 # before one exists. Whenever the packaging changes, every target is built and
-# archived exactly as a release would, and the artifacts are left on the run
-# for inspection. Nothing is published: the publish jobs in `release.yml` only
-# run for a tag ref.
+# archived exactly as a release would, and the archives are left on the run for
+# inspection. Nothing is published: this calls only the read-only half.
 on:
   push:
     branches: [main]
     paths:
-      - ".github/workflows/release.yml"
-      - ".github/workflows/release-rehearsal.yml"
+      - ".github/workflows/release*.yml"
       - "install.sh"
       - "install.ps1"
       - "Cargo.toml"
       - "Cargo.lock"
   pull_request:
     paths:
-      - ".github/workflows/release.yml"
+      - ".github/workflows/release*.yml"
       - "Cargo.toml"
       - "Cargo.lock"
 
 jobs:
   rehearse:
-    name: Build every release target
-    uses: ./.github/workflows/release.yml
-    # Inherited rather than narrowed: a called workflow may not request more
-    # than its caller grants, and `release.yml` asks for `contents: write` so
-    # that a tagged run can publish. The publish jobs are skipped here anyway,
-    # because they are gated on a tag ref.
-    secrets: inherit
+    name: Rehearse
+    uses: ./.github/workflows/release-build.yml
+    permissions:
+      contents: read
