@@ -108,7 +108,7 @@ def write_scoop(version: str, sums: dict[str, str]) -> Path:
 
     path = HERE / "scoop" / "bloatrail.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=4) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(manifest, indent=4) + "\n", encoding="utf-8", newline="\n")
     return path
 
 
@@ -168,7 +168,7 @@ end
 '''
     path = HERE / "homebrew" / "bloatrail.rb"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(formula, encoding="utf-8")
+    path.write_text(formula, encoding="utf-8", newline="\n")
     return path
 
 
@@ -218,7 +218,7 @@ package() {{
 """
     path = HERE / "aur" / "PKGBUILD"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(pkgbuild, encoding="utf-8")
+    path.write_text(pkgbuild, encoding="utf-8", newline="\n")
     return path
 
 
@@ -314,7 +314,7 @@ ManifestVersion: 1.6.0
         ("Juuzoe.Bloatrail.locale.en-US.yaml", locale_manifest),
     ]:
         path = directory / name
-        path.write_text(content, encoding="utf-8")
+        path.write_text(content, encoding="utf-8", newline="\n")
         written.append(path)
     return written
 
