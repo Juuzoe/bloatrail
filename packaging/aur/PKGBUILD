@@ -1,0 +1,38 @@
+# Maintainer: Maksym Gavrylenko <mgavrylenko05@gmail.com>
+pkgname=bloatrail-bin
+pkgver=0.3.0
+pkgrel=1
+pkgdesc="Developer-aware disk analyser that explains what is safe to delete"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Juuzoe/bloatrail"
+license=('MIT')
+provides=('bloatrail')
+conflicts=('bloatrail')
+
+source_x86_64=("https://github.com/Juuzoe/bloatrail/releases/download/v0.3.0/bloatrail-v0.3.0-x86_64-unknown-linux-musl.tar.gz")
+sha256sums_x86_64=('a160bb153fb1b37f8fa28178d990563f6772bd97a175e9ab49c2219da04faada')
+
+source_aarch64=("https://github.com/Juuzoe/bloatrail/releases/download/v0.3.0/bloatrail-v0.3.0-aarch64-unknown-linux-gnu.tar.gz")
+sha256sums_aarch64=('91f720cadf3571d6051136c17cd4ffe779d772561a8980a90a1d84d39f0ef0a4')
+
+package() {
+    # An `&&` one-liner would abort the build on x86_64, because makepkg runs
+    # with `set -e` and a false test is a non-zero exit.
+    local dir
+    if [ "$CARCH" = "aarch64" ]; then
+        dir="bloatrail-v0.3.0-aarch64-unknown-linux-gnu"
+    else
+        dir="bloatrail-v0.3.0-x86_64-unknown-linux-musl"
+    fi
+
+    install -Dm755 "$srcdir/$dir/bloatrail" "$pkgdir/usr/bin/bloatrail"
+    install -Dm644 "$srcdir/$dir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 "$srcdir/$dir/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+
+    "$srcdir/$dir/bloatrail" completions bash |
+        install -Dm644 /dev/stdin "$pkgdir/usr/share/bash-completion/completions/bloatrail"
+    "$srcdir/$dir/bloatrail" completions zsh |
+        install -Dm644 /dev/stdin "$pkgdir/usr/share/zsh/site-functions/_bloatrail"
+    "$srcdir/$dir/bloatrail" completions fish |
+        install -Dm644 /dev/stdin "$pkgdir/usr/share/fish/vendor_completions.d/bloatrail.fish"
+}

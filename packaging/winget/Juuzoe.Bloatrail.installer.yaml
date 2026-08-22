@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: Juuzoe.Bloatrail
+PackageVersion: 0.3.0
+InstallerType: zip
+NestedInstallerType: portable
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/Juuzoe/bloatrail/releases/download/v0.3.0/bloatrail-v0.3.0-x86_64-pc-windows-msvc.zip
+    InstallerSha256: A9B154A55A707CC7797E658EC373CDDC344645D13DD9086C143DA51F0DD0C5FC
+    NestedInstallerFiles:
+      - RelativeFilePath: bloatrail-v0.3.0-x86_64-pc-windows-msvc\bloatrail.exe
+        PortableCommandAlias: bloatrail
+      - RelativeFilePath: bloatrail-v0.3.0-x86_64-pc-windows-msvc\bloatrail-gui.exe
+        PortableCommandAlias: bloatrail-gui
+  - Architecture: arm64
+    InstallerUrl: https://github.com/Juuzoe/bloatrail/releases/download/v0.3.0/bloatrail-v0.3.0-aarch64-pc-windows-msvc.zip
+    InstallerSha256: B788382A9C521572FE01D339C5B5F920F06162C623AC88CE33C144543D1F31E2
+    NestedInstallerFiles:
+      - RelativeFilePath: bloatrail-v0.3.0-aarch64-pc-windows-msvc\bloatrail.exe
+        PortableCommandAlias: bloatrail
+      - RelativeFilePath: bloatrail-v0.3.0-aarch64-pc-windows-msvc\bloatrail-gui.exe
+        PortableCommandAlias: bloatrail-gui
+ManifestType: installer
+ManifestVersion: 1.6.0

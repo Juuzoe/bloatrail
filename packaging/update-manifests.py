@@ -97,7 +97,12 @@ def write_scoop(version: str, sums: dict[str, str]) -> Path:
                     "extract_dir": "bloatrail-v$version-aarch64-pc-windows-msvc",
                 },
             },
-            "hash": {"url": "$url.sha256"},
+            # The release publishes one combined SHA256SUMS rather than a
+            # sidecar per archive, so autoupdate reads the hash out of it.
+            "hash": {
+                "url": url_for("v$version", "SHA256SUMS"),
+                "regex": "$sha256\\s+$basename",
+            },
         },
     }
 
@@ -223,37 +228,25 @@ def write_winget(version: str, sums: dict[str, str]) -> list[Path]:
     x64 = archive(version, "x86_64-pc-windows-msvc", "zip")
     arm = archive(version, "aarch64-pc-windows-msvc", "zip")
 
-    installers = [
-        {
-            "Architecture": "x64",
-            "InstallerUrl": url_for(version, x64),
-            "InstallerSha256": need(sums, x64).upper(),
+    # Both Windows archives carry the CLI and the desktop app.
+    def windows_installer(architecture: str, name: str, digest: str) -> dict:
+        folder = name[: -len(".zip")]
+        return {
+            "Architecture": architecture,
+            "InstallerUrl": url_for(version, name),
+            "InstallerSha256": digest.upper(),
             "NestedInstallerFiles": [
                 {
-                    "RelativeFilePath": f"{x64[:-len('.zip')]}\\bloatrail.exe",
-                    "PortableCommandAlias": "bloatrail",
-                },
-                {
-                    "RelativeFilePath": f"{x64[:-len('.zip')]}\\bloatrail-gui.exe",
-                    "PortableCommandAlias": "bloatrail-gui",
-                },
+                    "RelativeFilePath": f"{folder}\\{binary}.exe",
+                    "PortableCommandAlias": binary,
+                }
+                for binary in ("bloatrail", "bloatrail-gui")
             ],
         }
-    ]
+
+    installers = [windows_installer("x64", x64, need(sums, x64))]
     if arm in sums:
-        installers.append(
-            {
-                "Architecture": "arm64",
-                "InstallerUrl": url_for(version, arm),
-                "InstallerSha256": sums[arm].upper(),
-                "NestedInstallerFiles": [
-                    {
-                        "RelativeFilePath": f"{arm[:-len('.zip')]}\\bloatrail.exe",
-                        "PortableCommandAlias": "bloatrail",
-                    }
-                ],
-            }
-        )
+        installers.append(windows_installer("arm64", arm, sums[arm]))
 
     directory = HERE / "winget"
     directory.mkdir(parents=True, exist_ok=True)

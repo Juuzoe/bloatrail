@@ -1,0 +1,46 @@
+{
+    "version": "0.3.0",
+    "description": "Developer-aware disk analyser: finds what is taking up space and what is safe to delete",
+    "homepage": "https://github.com/Juuzoe/bloatrail",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/Juuzoe/bloatrail/releases/download/v0.3.0/bloatrail-v0.3.0-x86_64-pc-windows-msvc.zip",
+            "hash": "a9b154a55a707cc7797e658ec373cddc344645d13dd9086c143da51f0dd0c5fc",
+            "extract_dir": "bloatrail-v0.3.0-x86_64-pc-windows-msvc"
+        },
+        "arm64": {
+            "url": "https://github.com/Juuzoe/bloatrail/releases/download/v0.3.0/bloatrail-v0.3.0-aarch64-pc-windows-msvc.zip",
+            "hash": "b788382a9c521572fe01d339c5b5f920f06162c623ac88ce33c144543d1f31e2",
+            "extract_dir": "bloatrail-v0.3.0-aarch64-pc-windows-msvc"
+        }
+    },
+    "bin": [
+        "bloatrail.exe"
+    ],
+    "shortcuts": [
+        [
+            "bloatrail-gui.exe",
+            "Bloatrail"
+        ]
+    ],
+    "checkver": {
+        "github": "https://github.com/Juuzoe/bloatrail"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/Juuzoe/bloatrail/releases/download/v$version/bloatrail-v$version-x86_64-pc-windows-msvc.zip",
+                "extract_dir": "bloatrail-v$version-x86_64-pc-windows-msvc"
+            },
+            "arm64": {
+                "url": "https://github.com/Juuzoe/bloatrail/releases/download/v$version/bloatrail-v$version-aarch64-pc-windows-msvc.zip",
+                "extract_dir": "bloatrail-v$version-aarch64-pc-windows-msvc"
+            }
+        },
+        "hash": {
+            "url": "https://github.com/Juuzoe/bloatrail/releases/download/v$version/SHA256SUMS",
+            "regex": "$sha256\\s+$basename"
+        }
+    }
+}

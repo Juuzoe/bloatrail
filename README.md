@@ -32,6 +32,12 @@ curl -fsSL https://raw.githubusercontent.com/Juuzoe/bloatrail/main/install.sh | 
 irm https://raw.githubusercontent.com/Juuzoe/bloatrail/main/install.ps1 | iex
 ```
 
+**Scoop (Windows)**
+
+```powershell
+scoop install https://raw.githubusercontent.com/Juuzoe/bloatrail/main/packaging/scoop/bloatrail.json
+```
+
 **From source**
 
 ```sh
