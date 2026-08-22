@@ -1,0 +1,19 @@
+name: Permissions probe
+
+# Temporary. Confirms a job may request contents: write when the repository's
+# default token is read-only, which is what the release publish job needs.
+# Deleted once answered.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/permissions-probe.yml"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - run: |
+          echo "The job started, so contents: write was granted." >> "$GITHUB_STEP_SUMMARY"
