@@ -15,7 +15,7 @@ irm https://raw.githubusercontent.com/Juuzoe/bloatrail/main/install.ps1 | iex
 **With Cargo**
 
 ```sh
-cargo install bloatrail
+cargo install --git https://github.com/Juuzoe/bloatrail --locked
 ```
 
 Or download an archive below and put `bloatrail` on your `PATH`.
@@ -33,7 +33,7 @@ Or download an archive below and put `bloatrail` on your `PATH`.
 
 The musl build is statically linked and runs on any distribution. The Windows
 and macOS archives contain the desktop app alongside the CLI; on Linux, build
-it with `cargo install bloatrail --features gui`.
+it with `cargo install --git https://github.com/Juuzoe/bloatrail --locked --features gui`.
 
 `SHA256SUMS` covers every archive:
 

@@ -191,8 +191,14 @@ source_aarch64=("{url_for(version, arm)}")
 sha256sums_aarch64=('{need(sums, arm)}')
 
 package() {{
-    local dir="bloatrail-{version}-$CARCH-unknown-linux-musl"
-    [ "$CARCH" = "aarch64" ] && dir="bloatrail-{version}-aarch64-unknown-linux-gnu"
+    # An `&&` one-liner would abort the build on x86_64, because makepkg runs
+    # with `set -e` and a false test is a non-zero exit.
+    local dir
+    if [ "$CARCH" = "aarch64" ]; then
+        dir="bloatrail-{version}-aarch64-unknown-linux-gnu"
+    else
+        dir="bloatrail-{version}-x86_64-unknown-linux-musl"
+    fi
 
     install -Dm755 "$srcdir/$dir/bloatrail" "$pkgdir/usr/bin/bloatrail"
     install -Dm644 "$srcdir/$dir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

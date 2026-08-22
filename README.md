@@ -2,16 +2,53 @@
 
 **Find out where your disk space actually went.**
 
+[![CI](https://github.com/Juuzoe/bloatrail/actions/workflows/ci.yml/badge.svg)](https://github.com/Juuzoe/bloatrail/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Juuzoe/bloatrail?sort=semver)](https://github.com/Juuzoe/bloatrail/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Juuzoe/bloatrail/blob/main/LICENSE)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+
 Bloatrail is a developer-aware disk analyser written in Rust, with a command-line
 tool and a native desktop app. It identifies dependencies, build artifacts,
 caches, Git data and container storage, explains why each one sits on your disk,
 and offers to remove the parts your build tools can recreate.
 
-![The Bloatrail desktop app showing a storage breakdown, an annotated directory tree, and the details panel explaining why a target directory is safe to remove](docs/screenshots/overview.png)
+![The Bloatrail desktop app showing a storage breakdown, an annotated directory tree, and the details panel explaining why a target directory is safe to remove](https://raw.githubusercontent.com/Juuzoe/bloatrail/main/docs/screenshots/overview.png)
 
 > Every screenshot and sample output on this page comes from a synthetic project
 > folder built for the purpose. None of it is a real machine, and no benchmark
 > figures are quoted anywhere in this repository.
+
+## Install
+
+**macOS and Linux**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Juuzoe/bloatrail/main/install.sh | sh
+```
+
+**Windows**
+
+```powershell
+irm https://raw.githubusercontent.com/Juuzoe/bloatrail/main/install.ps1 | iex
+```
+
+**Package managers**
+
+```sh
+brew install --formula https://raw.githubusercontent.com/Juuzoe/bloatrail/main/packaging/homebrew/bloatrail.rb
+scoop install https://raw.githubusercontent.com/Juuzoe/bloatrail/main/packaging/scoop/bloatrail.json
+cargo install --git https://github.com/Juuzoe/bloatrail --locked    # builds from source
+```
+
+Or take an archive from the [latest release](https://github.com/Juuzoe/bloatrail/releases/latest):
+Windows, macOS and Linux, on both x86 and ARM. Every archive is listed in
+`SHA256SUMS`, which the install scripts verify before writing anything.
+
+Then point it at a directory:
+
+```sh
+bloatrail scan ~/Developer
+```
 
 ---
 
@@ -129,7 +166,7 @@ Groups are ordered by how confident Bloatrail is, and the checkboxes start
 empty. **Select safe** ticks the `SAFE` groups; nothing else is ever ticked for
 you.
 
-![The Cleanup view listing groups under SAFE, PROBABLY SAFE and REVIEW headings, with a NOT OFFERED section below showing videos, Git repositories and source files](docs/screenshots/cleanup.png)
+![The Cleanup view listing groups under SAFE, PROBABLY SAFE and REVIEW headings, with a NOT OFFERED section below showing videos, Git repositories and source files](https://raw.githubusercontent.com/Juuzoe/bloatrail/main/docs/screenshots/cleanup.png)
 
 ### Confirm before anything moves
 
@@ -137,14 +174,14 @@ The dialog restates the exact scope, Cancel holds focus, and Escape closes it.
 Removals from the app go to the Recycle Bin. Permanent deletion lives in the
 CLI, behind a flag you have to type.
 
-![A confirmation dialog reading "Move 6.6 GB in 8 locations to the Recycle Bin?" with each group itemised and Cancel focused](docs/screenshots/confirm.png)
+![A confirmation dialog reading "Move 6.6 GB in 8 locations to the Recycle Bin?" with each group itemised and Cancel focused](https://raw.githubusercontent.com/Juuzoe/bloatrail/main/docs/screenshots/confirm.png)
 
 ### Find the individual files
 
 Each row carries its category and its age, because the age answers the question
 the size raises: is this still in use?
 
-![The Largest files view, a ranked table of file paths with sizes, categories and modification ages](docs/screenshots/largest.png)
+![The Largest files view, a ranked table of file paths with sizes, categories and modification ages](https://raw.githubusercontent.com/Juuzoe/bloatrail/main/docs/screenshots/largest.png)
 
 Build the app with:
 
@@ -156,7 +193,32 @@ cargo build --release --features gui
 
 ## Installation
 
-Bloatrail is not on any package registry yet. Build it from source:
+The [Install](#install) section above covers the prebuilt binaries. What
+follows is everything else.
+
+### Which download do I want?
+
+| You are on | File |
+| --- | --- |
+| Windows, ordinary PC | `x86_64-pc-windows-msvc.zip` |
+| Windows on ARM (Snapdragon, Surface Pro X) | `aarch64-pc-windows-msvc.zip` |
+| Mac with Apple silicon (M1 and later) | `aarch64-apple-darwin.tar.gz` |
+| Mac with an Intel processor | `x86_64-apple-darwin.tar.gz` |
+| Linux, ordinary PC | `x86_64-unknown-linux-musl.tar.gz` |
+| Linux on ARM (Raspberry Pi 4 and 5, ARM servers) | `aarch64-unknown-linux-gnu.tar.gz` |
+
+The Linux x86 build is statically linked against musl, so it runs on any
+distribution whatever its glibc version. The Windows and macOS archives carry
+the desktop app next to the CLI.
+
+macOS quarantines anything downloaded through a browser. The install script is
+not affected; for a manual download, clear the flag:
+
+```sh
+xattr -dr com.apple.quarantine bloatrail
+```
+
+### From source
 
 ```bash
 git clone https://github.com/Juuzoe/bloatrail
@@ -172,6 +234,14 @@ The CLI needs Rust 1.85 or newer; the desktop app needs 1.86, because its
 window and dialog dependencies ask for it. Both numbers are checked in CI
 against the committed lockfile. Nothing else is required: the Docker
 integration is optional and skips itself when Docker is absent.
+
+On Linux the desktop app is built from source rather than downloaded, because a
+prebuilt binary would need a matching GTK and X11 at runtime and no single
+archive can promise that across distributions:
+
+```bash
+cargo install --git https://github.com/Juuzoe/bloatrail --locked --features gui
+```
 
 ---
 
@@ -374,7 +444,7 @@ Home-directory locations resolve per platform: `%LOCALAPPDATA%` and `%APPDATA%`
 on Windows, `~/Library/...` on macOS, XDG paths on Linux.
 
 Adding an ecosystem means writing one `Detector` and appending it to the
-registry in [`src/detectors/mod.rs`](src/detectors/mod.rs). Nothing else in the
+registry in [`src/detectors/mod.rs`](https://github.com/Juuzoe/bloatrail/blob/main/src/detectors/mod.rs). Nothing else in the
 codebase changes.
 
 ---
@@ -518,7 +588,7 @@ locations, which is how the test suite stays out of your real state.
 ## JSON output
 
 Every command accepts `--json`. Dedicated types in
-[`src/output/json.rs`](src/output/json.rs) define the schema, kept separate from
+[`src/output/json.rs`](https://github.com/Juuzoe/bloatrail/blob/main/src/output/json.rs) define the schema, kept separate from
 the internal engine types, and every document carries `schema_version`.
 
 ```bash
@@ -577,14 +647,14 @@ Three decisions keep it fast and bounded:
   lookup. Marker files come from the directory listing that already happened,
   which is why project context costs zero extra syscalls.
 
-Benchmarks live in [`benches/`](benches) and run on Criterion:
+Benchmarks live in [`benches/`](https://github.com/Juuzoe/bloatrail/blob/main/benches) and run on Criterion:
 
 ```bash
 cargo bench --bench scanner          # end-to-end traversal throughput
 cargo bench --bench classification   # per-directory classification cost
 ```
 
-[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) explains how to record results on
+[`docs/BENCHMARKS.md`](https://github.com/Juuzoe/bloatrail/blob/main/docs/BENCHMARKS.md) explains how to record results on
 your own hardware. **No performance figures appear in this repository**, because
 none have been measured on a machine you could compare against.
 
@@ -729,11 +799,11 @@ Add it to `detectors::all()`, then write tests covering the positive case and
 the case where the same directory name appears without the supporting context.
 A detector that fires on a name alone is a bug.
 
-[CONTRIBUTING.md](CONTRIBUTING.md) has the full guide, including the rules for
+[CONTRIBUTING.md](https://github.com/Juuzoe/bloatrail/blob/main/CONTRIBUTING.md) has the full guide, including the rules for
 touching the cleanup safety layer.
 
 ---
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/Juuzoe/bloatrail/blob/main/LICENSE).
