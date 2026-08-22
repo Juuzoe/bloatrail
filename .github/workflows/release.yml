@@ -11,6 +11,11 @@ on:
   # itself changes. Publishing is gated on a tag ref, so a call from a branch
   # builds and verifies without releasing anything.
   workflow_call:
+    secrets:
+      # Declared optional so a caller without it still starts: a reusable
+      # workflow may only read secrets its contract names.
+      CARGO_REGISTRY_TOKEN:
+        required: false
 
 env:
   CARGO_TERM_COLOR: always

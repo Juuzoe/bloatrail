@@ -17,3 +17,7 @@ Thumbs.db
 *.profraw
 perf.data*
 flamegraph.svg
+
+# Python bytecode from the packaging scripts
+__pycache__/
+*.pyc

@@ -25,5 +25,8 @@ jobs:
   rehearse:
     name: Build every release target
     uses: ./.github/workflows/release.yml
-    permissions:
-      contents: read
+    # Inherited rather than narrowed: a called workflow may not request more
+    # than its caller grants, and `release.yml` asks for `contents: write` so
+    # that a tagged run can publish. The publish jobs are skipped here anyway,
+    # because they are gated on a tag ref.
+    secrets: inherit
