@@ -1,0 +1,62 @@
+name: Bug report
+description: Something behaved differently from how it is documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If Bloatrail deleted something it should not have, or reported space it
+        could not free, say so plainly — those are the reports that matter most
+        and they get looked at first.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The command you ran and what came back. Paste output rather than describing it.
+      placeholder: |
+        $ bloatrail clean --dry-run ~/projects
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `bloatrail --version`.
+      placeholder: bloatrail 0.3.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: filesystem
+    attributes:
+      label: Filesystem
+      description: NTFS, APFS, ext4, btrfs, ZFS, a network share. Relevant for anything involving sizes, duplicates or hardlinks.
+      placeholder: APFS on internal NVMe
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Whether the tree uses pnpm, hardlinks, symlinks, junctions or copy-on-write clones is often the answer.

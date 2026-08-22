@@ -1,0 +1,53 @@
+name: Detection request
+description: A tool whose storage Bloatrail does not recognise yet
+labels: [detection]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Bloatrail decides what a directory is from the project files around it,
+        never from its name alone, so a good request names the marker as well as
+        the directory.
+
+  - type: input
+    id: directory
+    attributes:
+      label: Directory name
+      placeholder: .turbo
+    validations:
+      required: true
+
+  - type: input
+    id: technology
+    attributes:
+      label: Which tool creates it
+      placeholder: Turborepo
+    validations:
+      required: true
+
+  - type: input
+    id: marker
+    attributes:
+      label: What proves the tool is in use
+      description: The file whose presence identifies the project. Without one, the directory cannot be classified safely.
+      placeholder: turbo.json in the same directory, or a "turbo" key in package.json
+    validations:
+      required: true
+
+  - type: dropdown
+    id: safety
+    attributes:
+      label: What happens if it is deleted
+      options:
+        - The tool rebuilds it automatically
+        - The tool rebuilds it, but slowly or by downloading
+        - Something is lost that cannot be regenerated
+        - I am not sure
+    validations:
+      required: true
+
+  - type: input
+    id: command
+    attributes:
+      label: Command that regenerates it
+      placeholder: turbo build
