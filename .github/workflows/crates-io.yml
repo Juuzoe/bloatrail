@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Version to publish, e.g. v0.3.0 (the leading v is optional)"
-        required: true
+        description: "Version to publish. Leave empty for the newest tag."
+        required: false
         type: string
 
 permissions:
@@ -34,6 +34,15 @@ jobs:
           # Tolerate a stray space and a missing or present leading "v", so the
           # difference between 0.3.0 and v0.3.0 is not a failed run.
           raw=$(printf '%s' '${{ inputs.tag }}' | tr -d '[:space:]')
+
+          # Empty means the newest tag, which is what this is nearly always
+          # run for. Typing a version that does not exist should not be the
+          # normal way to use it.
+          if [ -z "$raw" ]; then
+            raw=$(git describe --tags --abbrev=0)
+            echo "No version given; using the newest tag."
+          fi
+
           case "$raw" in
             v*) tag="$raw" ;;
             V*) tag="v${raw#V}" ;;
