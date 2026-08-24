@@ -1,0 +1,49 @@
+name: Publish to crates.io
+
+# Publishing a tag that already exists, without rebuilding or touching its
+# GitHub release. The release workflow publishes automatically on a new tag;
+# this is for filling in a version that was tagged before the registry token
+# existed, or for retrying a publish that failed on its own.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish, e.g. v0.3.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: cargo publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Cheaper to fail here than halfway through an upload that cannot be
+      # undone: a published version can be yanked but never replaced.
+      - name: Check the tag matches Cargo.toml
+        run: |
+          set -euo pipefail
+          manifest=$(sed -n '/^\[package\]/,/^\[/ s/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)
+          echo "tag=${{ inputs.tag }}  Cargo.toml=$manifest"
+          if [ "${{ inputs.tag }}" != "v$manifest" ]; then
+            echo "::error::Tag ${{ inputs.tag }} does not match version $manifest in Cargo.toml"
+            exit 1
+          fi
+
+      - name: Publish
+        env:
+          TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::CARGO_REGISTRY_TOKEN is not set. Add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          cargo publish --locked --token "$TOKEN"
