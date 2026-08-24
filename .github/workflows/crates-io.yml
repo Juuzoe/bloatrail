@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to publish, e.g. v0.3.0"
+        description: "Version to publish, e.g. v0.3.0 (the leading v is optional)"
         required: true
         type: string
 
@@ -20,9 +20,37 @@ jobs:
     name: cargo publish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # The default branch is checked out rather than the tag directly, so that
+      # a tag which does not exist produces an explanation instead of a bare
+      # "git failed with exit code 1" from inside the checkout action.
+      - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Resolve the tag
+        id: resolve
+        run: |
+          set -euo pipefail
+          # Tolerate a stray space and a missing or present leading "v", so the
+          # difference between 0.3.0 and v0.3.0 is not a failed run.
+          raw=$(printf '%s' '${{ inputs.tag }}' | tr -d '[:space:]')
+          case "$raw" in
+            v*) tag="$raw" ;;
+            V*) tag="v${raw#V}" ;;
+            *)  tag="v$raw" ;;
+          esac
+
+          if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::No tag named $tag. Tags in this repository:"
+            git tag -l | sed 's/^/  /'
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Publishing $tag ($(git rev-parse --short "$tag^{commit}"))"
+
+      - name: Check out the tag
+        run: git checkout --detach "${{ steps.resolve.outputs.tag }}"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -31,10 +59,11 @@ jobs:
       - name: Check the tag matches Cargo.toml
         run: |
           set -euo pipefail
+          tag='${{ steps.resolve.outputs.tag }}'
           manifest=$(sed -n '/^\[package\]/,/^\[/ s/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)
-          echo "tag=${{ inputs.tag }}  Cargo.toml=$manifest"
-          if [ "${{ inputs.tag }}" != "v$manifest" ]; then
-            echo "::error::Tag ${{ inputs.tag }} does not match version $manifest in Cargo.toml"
+          echo "tag=$tag  Cargo.toml=$manifest"
+          if [ "$tag" != "v$manifest" ]; then
+            echo "::error::Tag $tag does not match version $manifest in Cargo.toml"
             exit 1
           fi
 
