@@ -2,6 +2,29 @@
 
 Notable changes to Bloatrail. Versions follow [semantic versioning](https://semver.org).
 
+## Unreleased
+
+### A pnpm `node_modules` measured as empty
+
+Hidden directories are only traversed by default when their name is on an
+allowlist. `.pnpm-store` — the global store — was on it, but `node_modules/.pnpm`
+was not, and that is the per-project virtual store holding the packages
+themselves; everything beside it in `node_modules` is a symlink pointing back
+into it. A pnpm project's `node_modules` therefore measured 0 B, which is the
+one directory the tool exists to find.
+
+- `.pnpm` is traversed by default, so `node_modules` reports the space it
+  occupies.
+- `.nx` joins it: Nx keeps its build cache there and it grows to gigabytes on a
+  monorepo.
+
+### Tests
+
+- The unreadable-directory test probes the directory it locked instead of
+  assuming the mode took effect. Root ignores a `0o000` directory, so the
+  assertion failed inside a container or devcontainer for a reason unrelated to
+  the scanner.
+
 ## 0.3.0
 
 ### Duplicate detection understands hardlinks
