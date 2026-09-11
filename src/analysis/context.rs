@@ -79,6 +79,8 @@ bitflags! {
         const COMPOSER_JSON    = 1 << 27;
         /// `pubspec.yaml`
         const PUBSPEC          = 1 << 28;
+        /// `pubspec.lock`
+        const PUBSPEC_LOCK     = 1 << 50;
         /// `mix.exs`
         const MIX_EXS          = 1 << 29;
         /// `stack.yaml` / `*.cabal`
@@ -216,6 +218,7 @@ impl Markers {
             "Gemfile" | "Gemfile.lock" => *self |= Markers::GEMFILE,
             "composer.json" => *self |= Markers::COMPOSER_JSON,
             "pubspec.yaml" => *self |= Markers::PUBSPEC,
+            "pubspec.lock" => *self |= Markers::PUBSPEC_LOCK,
             "mix.exs" => *self |= Markers::MIX_EXS,
             "stack.yaml" | "cabal.project" => *self |= Markers::HASKELL_PROJECT,
             "flake.nix" | "default.nix" | "shell.nix" => *self |= Markers::NIX_FILE,

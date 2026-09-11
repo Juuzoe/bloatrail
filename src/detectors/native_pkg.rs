@@ -132,6 +132,7 @@ fn dependency(label: &'static str, technology: Technology, command: &'static str
 pub struct LanguageBuildDirs;
 
 static BUILD_TRIGGERS: &[Trigger] = &[
+    Trigger::Name("build"),
     Trigger::Name("_build"),
     Trigger::Name("dist-newstyle"),
     Trigger::Name(".stack-work"),
@@ -157,6 +158,25 @@ impl Detector for LanguageBuildDirs {
 
     fn detect(&self, ctx: &DirContext<'_>) -> Option<Detection> {
         match ctx.name_lower {
+            "build" if ctx.parent_is_project(Markers::PUBSPEC) => {
+                let locked = ctx.parent_markers.contains(Markers::PUBSPEC_LOCK);
+                let mut detection = build(
+                    "Dart/Flutter build output",
+                    Technology::Dart,
+                    "flutter build (Flutter) or dart run build_runner build (Dart)",
+                )
+                .with_evidence("A `pubspec.yaml` file exists in the parent directory.");
+                detection.confidence = if locked {
+                    Confidence::High
+                } else {
+                    Confidence::Medium
+                };
+                if locked {
+                    detection = detection
+                        .with_evidence("A `pubspec.lock` file pins the project's dependencies.");
+                }
+                Some(detection)
+            }
             "_build" if ctx.parent_is_project(Markers::MIX_EXS) => Some(build(
                 "Elixir build output",
                 Technology::Elixir,
