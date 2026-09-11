@@ -310,6 +310,17 @@ mod unix_only {
         fixture.file("locked/secret.bin", 5000);
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
 
+        // Root, and anyone else holding CAP_DAC_OVERRIDE, reads the directory
+        // regardless of its mode, so the scenario this test needs cannot be
+        // built there. That is the normal case inside a container or a
+        // devcontainer, where `cargo test` runs as uid 0; without this the
+        // suite fails for a reason that has nothing to do with the scanner.
+        if std::fs::read_dir(&locked).is_ok() {
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            eprintln!("skipped: this user reads a 0o000 directory anyway");
+            return;
+        }
+
         let scan = fixture.scan();
 
         // Restore permissions so the fixture can clean itself up.
