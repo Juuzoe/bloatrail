@@ -212,6 +212,8 @@ pub enum Technology {
     Terraform,
     /// Android tooling.
     Android,
+    /// Bazel build system.
+    Bazel,
     /// Unity game engine.
     Unity,
     /// Docker or a compatible container engine.
@@ -260,6 +262,7 @@ impl Technology {
             Technology::Nix => "Nix",
             Technology::Terraform => "Terraform",
             Technology::Android => "Android",
+            Technology::Bazel => "Bazel",
             Technology::Unity => "Unity",
             Technology::Docker => "Docker",
             Technology::Git => "Git",
