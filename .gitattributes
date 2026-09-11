@@ -3,4 +3,5 @@
 
 # Never touch binary assets.
 *.png binary
+*.gif binary
 *.ico binary

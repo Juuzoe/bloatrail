@@ -12,11 +12,13 @@ tool and a native desktop app. It identifies dependencies, build artifacts,
 caches, Git data and container storage, explains why each one sits on your disk,
 and offers to remove the parts your build tools can recreate.
 
-![The Bloatrail desktop app showing a storage breakdown, an annotated directory tree, and the details panel explaining why a target directory is safe to remove](https://raw.githubusercontent.com/Juuzoe/bloatrail/main/docs/screenshots/overview.png)
+![Bloatrail labelling a project folder: every directory carries what it is, and the two directories named `target` are judged differently](https://raw.githubusercontent.com/Juuzoe/bloatrail/main/docs/demo.gif)
 
 > Every screenshot and sample output on this page comes from a synthetic project
 > folder built for the purpose. None of it is a real machine, and no benchmark
-> figures are quoted anywhere in this repository.
+> figures are quoted anywhere in this repository. The animation above is
+> rendered from the tool's own output by
+> [`docs/make-demo.py`](docs/make-demo.py).
 
 ## Install
 
@@ -157,6 +159,26 @@ The name matched twice and the verdict followed the evidence. Every rule in
 Bloatrail works this way: a directory earns its classification from the project
 around it, never from its name alone.
 
+### Where this fits
+
+There are excellent disk analysers already, and they answer a different
+question. `du`, `ncdu`, `dust`, `dua` and `gdu` measure: they tell you how big
+something is, quickly and well, and then leave the decision to you. That is the
+right tool when you know your own disk.
+
+Bloatrail is for the case where you do not, because the space went to machinery
+you did not put there by hand: a `target/` you have never opened, a
+`node_modules` in a project you last touched in March, four Gradle caches.
+Sorting those by size does not help, because the sizes were never the hard
+part. What each one *is*, and whether your build tools can make it again, is.
+
+Ecosystem-specific cleaners — `cargo clean`, `npkill`, `./gradlew clean` — know
+one of those answers each. Bloatrail is the cross-ecosystem version: it reads
+the project files around a directory, says what it found and why, and sorts the
+result by whether removing it is safe. If you would rather it only told you and
+never touched anything, that is what `scan`, `tree` and `explain` are. Nothing
+is removed unless you run `clean`.
+
 ---
 
 ## The desktop app
@@ -164,6 +186,8 @@ around it, never from its name alone.
 `bloatrail-gui` runs the same engine behind a window. The two frontends share
 the scanner, the classifier and the safety layer, so they cannot disagree about
 what is safe.
+
+![The Bloatrail desktop app showing a storage breakdown, an annotated directory tree, and the details panel explaining why a target directory is safe to remove](https://raw.githubusercontent.com/Juuzoe/bloatrail/main/docs/screenshots/overview.png)
 
 ### Review what you would remove
 
