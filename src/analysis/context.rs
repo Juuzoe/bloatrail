@@ -121,6 +121,8 @@ bitflags! {
         const BUILD_ZIG        = 1 << 48;
         /// `wrangler.toml` / `wrangler.json(c)` (Cloudflare Workers)
         const WRANGLER         = 1 << 49;
+        /// `*.uproject` (Unreal Engine project marker)
+        const UPROJECT         = 1 << 50;
     }
 }
 
@@ -254,6 +256,7 @@ impl Markers {
             Some("sln" | "slnx") => *self |= Markers::DOTNET_SOLUTION,
             Some("cabal") => *self |= Markers::HASKELL_PROJECT,
             Some("tf") => *self |= Markers::TERRAFORM,
+            Some("uproject") => *self |= Markers::UPROJECT,
             _ => {}
         }
     }
@@ -381,6 +384,12 @@ mod tests {
         assert!(markers_from(&["Api.csproj"], &[]).contains(Markers::DOTNET_PROJECT));
         assert!(markers_from(&["App.fsproj"], &[]).contains(Markers::DOTNET_PROJECT));
         assert!(markers_from(&["Solution.sln"], &[]).contains(Markers::DOTNET_SOLUTION));
+    }
+
+    #[test]
+    fn unreal_markers_come_from_extensions() {
+        assert!(markers_from(&["MyGame.uproject"], &[]).contains(Markers::UPROJECT));
+        assert!(!markers_from(&["uproject"], &[]).contains(Markers::UPROJECT));
     }
 
     #[test]
