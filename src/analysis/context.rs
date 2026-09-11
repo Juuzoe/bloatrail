@@ -121,6 +121,8 @@ bitflags! {
         const BUILD_ZIG        = 1 << 48;
         /// `wrangler.toml` / `wrangler.json(c)` (Cloudflare Workers)
         const WRANGLER         = 1 << 49;
+        /// `WORKSPACE` / `WORKSPACE.bazel` / `MODULE.bazel` (Bazel workspace markers)
+        const BAZEL_WORKSPACE  = 1 << 50;
     }
 }
 
@@ -223,6 +225,10 @@ impl Markers {
             "Directory.Build.props" => *self |= Markers::DOTNET_PROPS,
             "build.zig" | "build.zig.zon" => *self |= Markers::BUILD_ZIG,
             "wrangler.toml" | "wrangler.json" | "wrangler.jsonc" => *self |= Markers::WRANGLER,
+            "WORKSPACE" | "WORKSPACE.bazel" | "WORKSPACE.bzlmod" | "MODULE.bazel"
+            | "MODULE.bazel.lock" | "REPO.bazel" => {
+                *self |= Markers::BAZEL_WORKSPACE;
+            }
             _ => {}
         }
 
