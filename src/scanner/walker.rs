@@ -786,6 +786,7 @@ fn is_always_traversed(name: &str) -> bool {
             | ".next"
             | ".nuxt"
             | ".turbo"
+            | ".nx"
             | ".parcel-cache"
             | ".svelte-kit"
             | ".angular"
