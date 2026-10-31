@@ -88,7 +88,19 @@ shell_profile() {
 
 # --- fetch -------------------------------------------------------------------
 
+# The releases/latest page redirects to the newest tag, so following the
+# redirect names the version without the REST API. The API allows 60
+# unauthenticated requests an hour per address and answers 403 once a shared
+# address (an office NAT, a pool of CI runners) has spent them, so it is only
+# the fallback.
 latest_version() {
+    tag=$(curl -fsSIL -o /dev/null -w '%{url_effective}' \
+        "https://github.com/$REPO/releases/latest" 2>/dev/null |
+        sed -n 's#^.*/releases/tag/\([^/?]*\).*$#\1#p')
+    if [ -n "$tag" ]; then
+        echo "$tag"
+        return
+    fi
     curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
         sed -n 's/.*"tag_name" *: *"\([^"]*\)".*/\1/p' |
         head -n 1

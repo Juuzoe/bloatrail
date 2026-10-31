@@ -1,0 +1,15 @@
+# Advisories `cargo audit` reports that are acknowledged rather than fixed.
+# Each entry says why it is not reachable, and what lifts it.
+
+[advisories]
+ignore = [
+    # quick-xml 0.30: quadratic duplicate-attribute check, and unbounded
+    # namespace allocation in `NsReader`. It reaches the build only through
+    # eframe 0.29 -> accesskit_unix -> atspi -> zbus-lockstep -> zbus_xml, the
+    # Linux accessibility bridge of the desktop app, which parses the D-Bus
+    # interface XML compiled into the binary. Bloatrail never hands it XML
+    # from a user or a scanned file. zbus_xml 4 pins quick-xml 0.30, so the fix
+    # is an eframe upgrade, which raises the desktop app's minimum Rust.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]

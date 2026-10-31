@@ -67,6 +67,22 @@ function Install-Bloatrail {
 
     if (-not $Version) { $Version = $env:BLOATRAIL_VERSION }
     if (-not $Version) {
+        # releases/latest redirects to the newest tag. Reading the redirect
+        # avoids the REST API, which answers 403 once a shared address has
+        # spent its 60 unauthenticated requests an hour, so the API is only
+        # the fallback.
+        try {
+            $request = [System.Net.WebRequest]::Create("https://github.com/$repo/releases/latest")
+            $request.Method = 'HEAD'
+            $request.AllowAutoRedirect = $false
+            $response = $request.GetResponse()
+            try { $location = $response.Headers['Location'] } finally { $response.Close() }
+            if ($location -match '/releases/tag/([^/?]+)') { $Version = $Matches[1] }
+        } catch {
+            $Version = $null
+        }
+    }
+    if (-not $Version) {
         try {
             $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -UseBasicParsing
             $Version = $release.tag_name
