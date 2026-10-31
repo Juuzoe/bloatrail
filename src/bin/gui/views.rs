@@ -1061,7 +1061,7 @@ fn growth(app: &mut App, bundle: &Arc<Bundle>, ui: &mut egui::Ui) {
         });
 }
 
-/// "6 scans over 28 days, <first> to <last>". Below a minute the count stands
+/// "6 scans over 28 days, `<first>` to `<last>`". Below a minute the count stands
 /// alone: the timestamps beside it already say everything a span would.
 fn window_summary(growth: &Growth) -> String {
     let count = match growth.span {
