@@ -12,7 +12,14 @@ machine would.
     cargo build --release
     python3 docs/make-demo.py
 
-Needs Pillow and a DejaVu Sans Mono install.
+Needs Pillow and a DejaVu Sans Mono install (Consolas is used on Windows when
+DejaVu is missing).
+
+    python3 docs/make-demo.py --social
+
+renders `docs/social-preview.png` instead: the 1280x640 card GitHub shows when
+the repository is linked. It has to be uploaded by hand, under Settings ->
+General -> Social preview.
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ except ImportError:  # pragma: no cover - a setup problem, not a code path
 
 REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "docs" / "demo.gif"
+SOCIAL = REPO / "docs" / "social-preview.png"
 
 # ----------------------------------------------------------------- appearance
 BG = (17, 19, 26)
@@ -70,17 +78,44 @@ SCENES = [
 ]
 
 
+# Consolas stands in for DejaVu on a Windows machine without it; the published
+# GIF is rendered with DejaVu.
+FALLBACKS = {
+    "DejaVuSansMono.ttf": "consola.ttf",
+    "DejaVuSansMono-Bold.ttf": "consolab.ttf",
+}
+
+
 def find_font(name: str) -> str:
-    for directory in FONT_DIRS:
-        candidate = Path(directory) / name
-        if candidate.exists():
-            return str(candidate)
+    for candidate_name in (name, FALLBACKS.get(name)):
+        if candidate_name is None:
+            continue
+        for directory in FONT_DIRS:
+            candidate = Path(directory) / candidate_name
+            if candidate.exists():
+                return str(candidate)
     sys.exit(f"{name} not found; install the DejaVu fonts")
 
 
 def sparse(path: Path, size: int) -> None:
+    """Create `path` with `size` apparent bytes and nothing allocated.
+
+    On Windows this must not be Python's `truncate()`, which zero-fills the
+    extension: the fixture would really occupy its 13 GB. The file is flagged
+    sparse and its end moved with fsutil, and there is no allocating fallback.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as fh:
+    with open(path, "wb"):
+        pass
+    if sys.platform == "win32":
+        for command in (["sparse", "setflag", str(path)],
+                        ["file", "setEOF", str(path), str(size)]):
+            done = subprocess.run(["fsutil", *command], capture_output=True)
+            if done.returncode != 0:
+                sys.exit(f"fsutil {' '.join(command)} failed; refusing to "
+                         "allocate the fixture for real")
+        return
+    with open(path, "r+b") as fh:
         fh.truncate(size)
 
 
@@ -133,13 +168,25 @@ def build_fixture(root: Path) -> None:
 def capture(binary: Path, argv: list[str], root: Path) -> list[str]:
     env = dict(os.environ, CLICOLOR_FORCE="1", COLUMNS="88")
     args = [a.replace("{root}", str(root)) for a in argv]
-    done = subprocess.run([str(binary), *args], capture_output=True, text=True, env=env)
+    # The binary writes UTF-8 everywhere; without `encoding` Python decodes
+    # with the Windows ANSI code page and every glyph turns to mojibake.
+    done = subprocess.run([str(binary), *args], capture_output=True,
+                          encoding="utf-8", env=env)
     if done.returncode != 0:
         sys.exit(f"{args} failed:\n{done.stderr}")
     # The fixture lives in a temporary directory; the demo shows it as
     # `~/Projects`, which is where the equivalent folder would really sit.
     text = done.stdout.replace(str(root), "~/Projects")
-    return text.rstrip("\n").split("\n")
+    lines = text.rstrip("\n").split("\n")
+    if os.name == "nt":
+        # On Windows the paths come out with backslashes, with home folded to
+        # `~`, and long enough to be shortened before the replace above can
+        # see them. Show the same `~/Projects` a Unix run prints.
+        lines = [line.replace("\\", "/") for line in lines]
+        lines = [re.sub(r"^\S*bloatrail-demo-\S*\s+",
+                        lambda m: "~/Projects".ljust(len(m.group(0))), line)
+                 for line in lines]
+    return lines
 
 
 def spans(line: str):
@@ -212,6 +259,50 @@ class Terminal:
         return img
 
 
+def social_card(body: list[str]) -> Image.Image:
+    """The 1280x640 repository card: the name, one line, and real output."""
+    width, height, margin = 1280, 640, 64
+    img = Image.new("RGB", (width, height), BG)
+    draw = ImageDraw.Draw(img)
+
+    title = ImageFont.truetype(find_font("DejaVuSansMono-Bold.ttf"), 58)
+    lead = ImageFont.truetype(find_font("DejaVuSansMono.ttf"), 23)
+    draw.text((margin, margin - 6), "bloatrail", font=title, fill=BOLD_FG)
+    draw.text((margin, margin + 70),
+              "Reads the project around each folder before",
+              font=lead, fill=FG)
+    draw.text((margin, margin + 102),
+              "saying what is safe to delete.", font=lead, fill=FG)
+
+    # The tree output, cut to what fits under the heading, in a window.
+    size = 17
+    regular = ImageFont.truetype(find_font("DejaVuSansMono.ttf"), size)
+    bold = ImageFont.truetype(find_font("DejaVuSansMono-Bold.ttf"), size)
+    cw = regular.getlength("M")
+    line_h = 24
+    top = margin + 160
+    rows = (height - top - 28) // line_h
+    lines = [line for line in body if plain(line).strip()][:rows]
+    cols = max(len(plain(line)) for line in lines)
+    box = [margin - 16, top - 14, min(width - margin + 16, margin + cols * cw + 16),
+           top + rows * line_h + 6]
+    draw.rectangle(box, fill=CHROME)
+
+    y = top
+    for line in lines:
+        x = margin
+        for text, colour, is_bold in spans(line):
+            for ch in text:
+                if x + cw > box[2] - 8:
+                    break
+                if ch != " ":
+                    draw.text((x, y), ch, font=bold if is_bold else regular, fill=colour)
+                wide = unicodedata.east_asian_width(ch) in ("W", "F")
+                x += cw * (2 if wide else 1)
+        y += line_h
+    return img
+
+
 def main() -> None:
     binary = REPO / "target" / "release" / ("bloatrail.exe" if os.name == "nt"
                                            else "bloatrail")
@@ -226,6 +317,13 @@ def main() -> None:
         bodies = [capture(binary, argv, root) for _, argv in SCENES]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+    if "--social" in sys.argv[1:]:
+        card = social_card(bodies[0])
+        card.save(SOCIAL, optimize=True)
+        print(f"{SOCIAL.relative_to(REPO)}  {card.width}x{card.height}  "
+              f"{SOCIAL.stat().st_size / 1024:.0f} KB")
+        return
 
     cols = max(max(len(plain(l)) for l in body) for body in bodies)
     cols = max(cols, max(len(cmd) for cmd, _ in SCENES) + 2) + 4
