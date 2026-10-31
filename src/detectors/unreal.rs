@@ -43,6 +43,7 @@ impl Detector for UnrealEngineOutput {
                 .with_evidence(
                     "Unreal Engine regenerates `Intermediate/` on the next compile or build.",
                 )
+                .regenerated_by("Build the project in Unreal Editor or your IDE")
                 .collapsed()
                 .with_specificity(SPEC_CONTEXT),
             ),
@@ -58,6 +59,7 @@ impl Detector for UnrealEngineOutput {
                 .with_evidence(
                     "Compiled modules and executables regenerated when the project is built.",
                 )
+                .regenerated_by("Build the project in Unreal Editor or your IDE")
                 .collapsed()
                 .with_specificity(SPEC_CONTEXT),
             ),
@@ -73,6 +75,7 @@ impl Detector for UnrealEngineOutput {
                 .with_evidence(
                     "Derived Data Cache (DDC) contains processed assets regenerated on demand.",
                 )
+                .regenerated_by("Open the project in Unreal Editor")
                 .collapsed()
                 .with_specificity(SPEC_CONTEXT),
             ),

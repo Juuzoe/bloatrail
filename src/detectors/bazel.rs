@@ -4,20 +4,19 @@ use crate::analysis::context::{DirContext, Markers};
 use crate::analysis::domain::{Category, CleanupSafety, Confidence, Detection, Technology};
 use crate::analysis::engine::{Detector, Trigger};
 
-use super::{SPEC_CONTEXT, SPEC_STRONG};
+use super::{SPEC_CONTEXT, SPEC_WEAK};
 
-/// Bazel build output and execution roots.
+/// Bazel's convenience links in a workspace root: `bazel-out`, `bazel-bin`,
+/// `bazel-testlogs` and `bazel-<workspace>`.
 ///
-/// Bazel workspaces link symlinks/directories in the workspace root like
-/// `bazel-out`, `bazel-bin`, `bazel-testlogs`, and `bazel-<workspace-name>`.
+/// Bazel creates these as symlinks (junctions on Windows) into its output base,
+/// so a default scan, which does not follow links, sees them only as links and
+/// the safety guard never removes one. They are classified anyway because
+/// `--follow-symlinks`, a copied workspace or an archive extracted without
+/// links turns them into ordinary directories.
 pub struct BazelOutput;
 
-static BAZEL_TRIGGERS: &[Trigger] = &[
-    Trigger::Name("bazel-out"),
-    Trigger::Name("bazel-bin"),
-    Trigger::Name("bazel-testlogs"),
-    Trigger::Prefix("bazel-"),
-];
+static BAZEL_TRIGGERS: &[Trigger] = &[Trigger::Prefix("bazel-")];
 
 impl Detector for BazelOutput {
     fn id(&self) -> &'static str {
@@ -29,117 +28,70 @@ impl Detector for BazelOutput {
     }
 
     fn detect(&self, ctx: &DirContext<'_>) -> Option<Detection> {
-        if !ctx.name_lower.starts_with("bazel-") {
-            return None;
-        }
+        let in_workspace = ctx.parent_is_project(Markers::BAZEL_WORKSPACE);
 
-        let in_workspace = ctx.parent_markers.contains(Markers::BAZEL_WORKSPACE);
-
-        match ctx.name_lower {
-            "bazel-out" => {
-                let confidence = if in_workspace {
-                    Confidence::High
-                } else {
-                    Confidence::Medium
-                };
-                Some(
-                    Detection::new(
-                        Category::BuildArtifact,
-                        confidence,
-                        CleanupSafety::Safe,
-                        "Bazel build output directory",
-                    )
-                    .with_technology(Technology::Bazel)
-                    .with_evidence(if in_workspace {
-                        "A Bazel workspace marker exists in the parent directory."
-                    } else {
-                        "Directory matches standard Bazel output layout."
-                    })
-                    .regenerated_by("bazel build ...")
-                    .collapsed()
-                    .with_specificity(if in_workspace {
-                        SPEC_CONTEXT
-                    } else {
-                        SPEC_STRONG
-                    }),
-                )
-            }
-            "bazel-bin" => {
-                let confidence = if in_workspace {
-                    Confidence::High
-                } else {
-                    Confidence::Medium
-                };
-                Some(
-                    Detection::new(
-                        Category::BuildArtifact,
-                        confidence,
-                        CleanupSafety::Safe,
-                        "Bazel binary output convenience symlink/directory",
-                    )
-                    .with_technology(Technology::Bazel)
-                    .with_evidence(if in_workspace {
-                        "A Bazel workspace marker exists in the parent directory."
-                    } else {
-                        "Directory matches standard Bazel binary output layout."
-                    })
-                    .regenerated_by("bazel build ...")
-                    .collapsed()
-                    .with_specificity(if in_workspace {
-                        SPEC_CONTEXT
-                    } else {
-                        SPEC_STRONG
-                    }),
-                )
-            }
-            "bazel-testlogs" => {
-                let confidence = if in_workspace {
-                    Confidence::High
-                } else {
-                    Confidence::Medium
-                };
-                Some(
-                    Detection::new(
-                        Category::Log,
-                        confidence,
-                        CleanupSafety::Safe,
-                        "Bazel test logs directory",
-                    )
-                    .with_technology(Technology::Bazel)
-                    .with_evidence(if in_workspace {
-                        "A Bazel workspace marker exists in the parent directory."
-                    } else {
-                        "Directory matches standard Bazel testlogs layout."
-                    })
-                    .regenerated_by("bazel test ...")
-                    .collapsed()
-                    .with_specificity(if in_workspace {
-                        SPEC_CONTEXT
-                    } else {
-                        SPEC_STRONG
-                    }),
-                )
-            }
-            _ => {
-                // bazel-<workspace> convenience symlink / execution root directory
-                if !in_workspace {
+        let (category, label, command) = match ctx.name_lower {
+            "bazel-out" => (
+                Category::BuildArtifact,
+                "Bazel build output",
+                "bazel build //...",
+            ),
+            "bazel-bin" => (
+                Category::BuildArtifact,
+                "Bazel binary output",
+                "bazel build //...",
+            ),
+            "bazel-testlogs" => (Category::Log, "Bazel test logs", "bazel test //..."),
+            name => {
+                // `bazel-<workspace>` is named after the workspace directory
+                // itself. Matching that exact name, rather than any `bazel-`
+                // prefix, keeps a hand-made `bazel-tools/` or `bazel-configs/`
+                // in the same repository out of the cleanup plan.
+                let rest = name.strip_prefix("bazel-")?;
+                let named_after_parent = ctx
+                    .parent_name
+                    .is_some_and(|parent| parent.eq_ignore_ascii_case(rest));
+                if !(in_workspace && named_after_parent) {
                     return None;
                 }
-                Some(
-                    Detection::new(
-                        Category::BuildArtifact,
-                        Confidence::High,
-                        CleanupSafety::Safe,
-                        "Bazel workspace execution root symlink/directory",
-                    )
-                    .with_technology(Technology::Bazel)
-                    .with_evidence("A Bazel workspace marker exists in the parent directory.")
-                    .regenerated_by("bazel build ...")
-                    .collapsed()
-                    .with_specificity(SPEC_CONTEXT - 10),
+                (
+                    Category::BuildArtifact,
+                    "Bazel execution root",
+                    "bazel build //...",
                 )
             }
+        };
+
+        if !in_workspace {
+            return Some(
+                Detection::new(
+                    Category::Unknown,
+                    Confidence::Low,
+                    CleanupSafety::Review,
+                    "Bazel-style directory with no workspace around it",
+                )
+                .with_technology(Technology::Bazel)
+                .with_evidence(
+                    "The name matches a Bazel output link, but no `WORKSPACE` or \
+                     `MODULE.bazel` file was found in the parent directory.",
+                )
+                .with_evidence("Bloatrail will not treat this as regenerable build output.")
+                .with_specificity(SPEC_WEAK),
+            );
         }
+
+        Some(
+            Detection::new(category, Confidence::High, CleanupSafety::Safe, label)
+                .with_technology(Technology::Bazel)
+                .with_evidence("A Bazel workspace file exists in the parent directory.")
+                .with_evidence(
+                    "Bazel recreates this link and everything behind it on the next build; \
+                     `bazel clean` removes the same data.",
+                )
+                .regenerated_by(command)
+                .collapsed()
+                .with_specificity(SPEC_CONTEXT),
+        )
     }
 }
 
@@ -179,15 +131,34 @@ mod tests {
     }
 
     #[test]
-    fn bazel_named_workspace_symlink_detected_with_marker() {
+    fn output_names_without_a_workspace_are_never_safe() {
         let env = KnownPaths::empty();
-        let custom = BazelOutput
-            .detect(&ctx("bazel-myproject", Markers::BAZEL_WORKSPACE, &env))
-            .expect("custom workspace detection");
-        assert_eq!(custom.category, Category::BuildArtifact);
-        assert_eq!(custom.cleanup, CleanupSafety::Safe);
+        for name in ["bazel-out", "bazel-bin", "bazel-testlogs"] {
+            let detection = BazelOutput
+                .detect(&ctx(name, Markers::empty(), &env))
+                .expect("name match is reported");
+            assert_eq!(detection.cleanup, CleanupSafety::Review, "{name}");
+            assert_eq!(detection.confidence, Confidence::Low, "{name}");
+        }
+    }
 
-        let without_marker = BazelOutput.detect(&ctx("bazel-myproject", Markers::empty(), &env));
-        assert!(without_marker.is_none());
+    #[test]
+    fn the_execution_root_link_must_be_named_after_the_workspace() {
+        let env = KnownPaths::empty();
+        let mut named = ctx("bazel-myproject", Markers::BAZEL_WORKSPACE, &env);
+        named.parent_name = Some("MyProject");
+        let detection = BazelOutput.detect(&named).expect("execution root");
+        assert_eq!(detection.category, Category::BuildArtifact);
+        assert_eq!(detection.cleanup, CleanupSafety::Safe);
+
+        // A directory a person made, in the same workspace, that merely
+        // starts with `bazel-`.
+        let mut handmade = ctx("bazel-configs", Markers::BAZEL_WORKSPACE, &env);
+        handmade.parent_name = Some("myproject");
+        assert!(BazelOutput.detect(&handmade).is_none());
+
+        let mut unmarked = ctx("bazel-myproject", Markers::empty(), &env);
+        unmarked.parent_name = Some("myproject");
+        assert!(BazelOutput.detect(&unmarked).is_none());
     }
 }

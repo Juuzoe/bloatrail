@@ -582,7 +582,7 @@ together without tension: confidence and safety are independent by design.
 | Ecosystem | Recognised by | Detected storage |
 | --- | --- | --- |
 | **Rust** | `Cargo.toml`, `Cargo.lock` | `target/`, `~/.cargo/registry`, `~/.cargo/git`, `~/.rustup` |
-| **JavaScript / TypeScript** | `package.json`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock(b)` | `node_modules/`, `.next/`, `.nuxt/`, `.turbo/`, `.parcel-cache/`, `.svelte-kit/`, `.astro/`, `.angular/`, `.vite/`, `dist/`, `out/`, `coverage/`, `.yarn/`, npm/pnpm/yarn/bun caches |
+| **JavaScript / TypeScript** | `package.json`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock(b)`, `nx.json` | `node_modules/`, `.next/`, `.nuxt/`, `.turbo/`, `.nx/`, `.parcel-cache/`, `.svelte-kit/`, `.astro/`, `.angular/`, `.vite/`, `dist/`, `out/`, `coverage/`, `.yarn/`, npm/pnpm/yarn/bun caches |
 | **Python** | `pyproject.toml`, `requirements.txt`, `setup.py`, `poetry.lock`, `Pipfile`, `pyvenv.cfg` | `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.tox/`, `.nox/`, `.venv/`, `site-packages/`, `*.egg-info`, pip/uv/Poetry/Conda caches |
 | **JVM** | `pom.xml`, `build.gradle(.kts)`, `gradlew` | `target/` (Maven), `build/`, `out/`, `.gradle/`, `~/.m2/repository`, `~/.gradle/caches` |
 | **.NET** | `*.csproj`, `*.fsproj`, `*.sln` | `bin/`, `obj/`, `.vs/`, `packages/`, `~/.nuget/packages` |
@@ -591,8 +591,11 @@ together without tension: confidence and safety are independent by design.
 | **Swift / Xcode** | `Package.swift`, `*.xcodeproj`, `Podfile` | `.build/`, `Pods/`, `DerivedData/`, `xcuserdata/`, iOS DeviceSupport, simulators |
 | **Zig / Nim** | `build.zig`, `build.zig.zon` | `zig-out/`, `zig-cache/`, `.zig-cache/`, `nimcache/` |
 | **Cloudflare Workers** | `wrangler.toml`, `wrangler.json(c)` | `.wrangler/`, held at `ProbablySafe` because it holds local D1 and KV state |
-| **Others** | `Gemfile`, `composer.json`, `pubspec.yaml`, `mix.exs`, `*.cabal`, `*.tf` | `vendor/`, `deps/`, `_build/`, `dist-newstyle/`, `.stack-work/`, `.dart_tool/`, `.terraform/`, `elm-stuff/` |
+| **Dart / Flutter** | `pubspec.yaml`, `pubspec.lock` | `build/`, `.dart_tool/` |
+| **Bazel** | `WORKSPACE`, `WORKSPACE.bazel`, `MODULE.bazel` | `bazel-out/`, `bazel-bin/`, `bazel-testlogs/`, `bazel-<workspace>/` |
+| **Others** | `Gemfile`, `composer.json`, `mix.exs`, `*.cabal`, `*.tf` | `vendor/`, `deps/`, `_build/`, `dist-newstyle/`, `.stack-work/`, `.terraform/`, `elm-stuff/` |
 | **Unity** | `Assets/` and `ProjectSettings/` together | `Library/`, `Temp/`, `Obj/` |
+| **Unreal Engine** | `*.uproject` | `Intermediate/`, `Binaries/`, `DerivedDataCache/`, `Saved/` (review) |
 | **IDEs** | | `.idea/`, `.vscode/`, `.vs/`, `.fleet/`, `.zed/`, JetBrains caches, VS Code caches |
 | **Version control** | | `.git/`, `.hg/`, `.svn/`, `.jj/`, measured and never offered |
 | **Containers** | | Docker Desktop data, `/var/lib/docker`, Podman storage, `overlay2/`, BuildKit cache |

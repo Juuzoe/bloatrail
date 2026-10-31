@@ -115,6 +115,26 @@ removed.
   all three platforms — the front door had no test at all — and rebuilds the
   demo fixture so the documentation cannot quietly stop being reproducible.
 
+### New ecosystems, from contributors
+
+- Dart and Flutter `build/` output, recognised by a `pubspec.yaml` beside it
+  and held at medium confidence until a `pubspec.lock` confirms the project
+  (#6, @QIU-Guanzong).
+- Nx's `.nx` task cache, only when an `nx.json` sits beside it (#7,
+  @QIU-Guanzong).
+- Unreal Engine's `Intermediate/`, `Binaries/` and `DerivedDataCache/`, with
+  `Saved/` held for review because it carries autosaves and local settings
+  (#8, @Visio-Vanitas).
+- Bazel's `bazel-out`, `bazel-bin`, `bazel-testlogs` and execution-root links
+  in a workspace (#9, @Visio-Vanitas). The execution-root rule matches only
+  `bazel-<workspace directory>`, so a hand-made `bazel-configs/` in the same
+  repository is never offered, and the output names with no workspace file
+  beside them are reported for review rather than as safe.
+- Contributions arriving on separate branches each picked "the next free"
+  marker bit and two of them collided, which would have made a
+  `pubspec.lock` count as an Unreal project. A test now fails whenever two
+  markers share a bit.
+
 ### A pnpm `node_modules` measured as empty
 
 Hidden directories are only traversed by default when their name is on an
