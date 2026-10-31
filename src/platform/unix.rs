@@ -9,6 +9,15 @@ use std::path::Path;
 use super::DiskUsage;
 
 /// Capacity and free space of the filesystem containing `path`.
+///
+/// The casts below are not redundant, whatever Clippy sees on the machine it
+/// is running on. `statvfs` field widths are platform-dependent: `f_blocks`
+/// and `f_bavail` are 64-bit on Linux and 32-bit on macOS, and `f_frsize`
+/// follows `c_ulong`, which is 32-bit on a 32-bit target. `as u64` is the one
+/// spelling that compiles everywhere — dropping it breaks macOS, and
+/// `u64::from` trips `useless_conversion` on Linux — so the lint is silenced
+/// rather than obeyed.
+#[allow(clippy::unnecessary_cast)]
 #[must_use]
 pub fn disk_usage(path: &Path) -> Option<DiskUsage> {
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;

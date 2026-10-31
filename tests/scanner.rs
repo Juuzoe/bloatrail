@@ -153,6 +153,26 @@ fn developer_dot_directories_are_always_traversed() {
 }
 
 #[test]
+fn a_pnpm_node_modules_reports_the_packages_inside_it() {
+    let fixture = Fixture::new();
+    fixture.write("app/package.json", b"{}");
+    fixture.write("app/pnpm-lock.yaml", b"lockfileVersion: 9.0\n");
+    // pnpm puts the packages in `node_modules/.pnpm` and leaves symlinks beside
+    // it, so a scan that skips the dot-directory sees an empty `node_modules`.
+    fixture.file(
+        "app/node_modules/.pnpm/left-pad@1.3.0/node_modules/left-pad/index.js",
+        9000,
+    );
+
+    let scan = fixture.scan();
+    let modules = node_named(&scan, "app/node_modules").expect("node_modules");
+    assert_eq!(
+        modules.total.bytes, 9000,
+        "the packages under `.pnpm` are the bytes `node_modules` occupies"
+    );
+}
+
+#[test]
 fn depth_limiting_reduces_retained_nodes_but_not_the_totals() {
     let fixture = Fixture::new();
     fixture.file("a/b/c/d/deep.bin", 4096);
@@ -309,6 +329,17 @@ mod unix_only {
         let locked = fixture.dir("locked");
         fixture.file("locked/secret.bin", 5000);
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Root, and anyone else holding CAP_DAC_OVERRIDE, reads the directory
+        // regardless of its mode, so the scenario this test needs cannot be
+        // built there. That is the normal case inside a container or a
+        // devcontainer, where `cargo test` runs as uid 0; without this the
+        // suite fails for a reason that has nothing to do with the scanner.
+        if std::fs::read_dir(&locked).is_ok() {
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            eprintln!("skipped: this user reads a 0o000 directory anyway");
+            return;
+        }
 
         let scan = fixture.scan();
 

@@ -806,6 +806,7 @@ fn is_always_traversed(name: &str) -> bool {
             | ".next"
             | ".nuxt"
             | ".turbo"
+            | ".nx"
             | ".parcel-cache"
             | ".svelte-kit"
             | ".angular"
@@ -836,6 +837,13 @@ fn is_always_traversed(name: &str) -> bool {
             | ".rustup"
             | ".npm"
             | ".yarn"
+            // `node_modules/.pnpm` is pnpm's per-project virtual store, and it
+            // holds the packages themselves: everything beside it in
+            // `node_modules` is a symlink pointing back into here. Leaving it
+            // out reported a pnpm project's `node_modules` as empty, which is
+            // the one directory the tool exists to find. `.pnpm-store` below is
+            // the global store and a different thing.
+            | ".pnpm"
             | ".pnpm-store"
             | ".bun"
             | ".deno"
