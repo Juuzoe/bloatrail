@@ -32,13 +32,12 @@ pub fn run(context: &Context, args: &LargestArgs) -> Result<()> {
     let root = context.resolve(args.path.as_ref())?;
     let scan = context.scan(root)?;
     let limit = context.settings.top.max(1);
+    let min_size = context.settings.min_size.as_u64();
 
     if context.json {
-        let document = json::largest_document(&scan, limit);
+        let document = json::largest_document(&scan, limit, min_size);
         return context.emit(&json::to_string(&document)?);
     }
-
-    let min_size = context.settings.min_size.as_u64();
 
     let mut out = String::new();
     if args.files {

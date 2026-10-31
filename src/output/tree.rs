@@ -7,7 +7,7 @@
 use std::fmt::Write as _;
 
 use crate::analysis::domain::CleanupSafety;
-use crate::output::{pad_right, truncate, Theme};
+use crate::output::{pad_right, Theme};
 use crate::scanner::tree::{DirTree, NodeId};
 use crate::units::ByteSize;
 
@@ -53,7 +53,7 @@ pub fn render(
     let _ = writeln!(
         out,
         "{}{}",
-        pad_right(&truncate(title, name_width), name_width + 2),
+        pad_right(&theme.truncate(title, name_width), name_width + 2),
         crate::output::pad_left(&total.to_string(), 10),
     );
     let _ = writeln!(out);
@@ -110,7 +110,7 @@ fn render_children(
         let _ = write!(
             line,
             "{}{}",
-            pad_right(&truncate(&label, name_width), name_width + 2),
+            pad_right(&theme.truncate(&label, name_width), name_width + 2),
             crate::output::pad_left(&size, 10),
         );
 

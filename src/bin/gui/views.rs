@@ -298,7 +298,11 @@ fn progress(app: &mut App, ui: &mut egui::Ui) {
                     ("Scanned", ByteSize(snapshot.bytes).to_string()),
                     (
                         "Speed",
-                        bloatrail::units::format_rate(snapshot.bytes, app.scan_seconds()),
+                        bloatrail::units::format_count_rate(
+                            snapshot.files,
+                            app.scan_seconds(),
+                            "files",
+                        ),
                     ),
                 ];
                 for (label, value) in rows {

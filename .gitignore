@@ -21,3 +21,6 @@ flamegraph.svg
 # Python bytecode from the packaging scripts
 __pycache__/
 *.pyc
+
+# Claude Code session state and agent worktrees
+/.claude/

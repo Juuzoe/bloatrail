@@ -16,7 +16,7 @@ use crate::docker::{DockerResource, DockerStatus};
 use crate::doctor::{DoctorReport, Finding, Severity};
 use crate::duplicates::DuplicateReport;
 use crate::history::{Diff, Growth, Projection};
-use crate::output::{elide_start, pad_left, pad_right, truncate, Theme, BRAND};
+use crate::output::{pad_left, pad_right, Theme, BRAND};
 use crate::platform::{DiskUsage, KnownPaths};
 use crate::scanner::ScanResult;
 use crate::timefmt;
@@ -94,12 +94,19 @@ pub fn scan_report(
     let _ = writeln!(
         out,
         "{}",
+        // Files a second, not bytes: sizes come from metadata without reading
+        // the files, so a bytes-per-second figure measures how large the files
+        // are rather than how fast anything ran.
         theme.dim(&format!(
-            "{} files, {} directories in {} ({}/s)",
+            "{} files, {} directories in {} ({})",
             format_count(scan.totals.files),
             format_count(scan.totals.dirs),
             format_duration(scan.duration),
-            ByteSize(scan.throughput() as u64)
+            crate::units::format_count_rate(
+                scan.totals.files,
+                scan.duration.as_secs_f64(),
+                "files"
+            )
         ))
     );
     out.push_str(&skipped_note(scan, theme));
@@ -163,19 +170,20 @@ pub fn reclaim_table(scan: &ScanResult, theme: &Theme, known: &KnownPaths, limit
             Some(d) => theme.by_safety(d.cleanup, &reclaimable),
             None => reclaimable.clone(),
         };
-        // Colour codes are invisible but not zero-width, so pad the plain text
-        // first and colour afterwards.
+        // Colour codes take bytes but no columns, so the gap is measured on
+        // the plain text and the colour wraps only the figure. Measuring the
+        // painted string in bytes put `—` (three bytes, one column) and every
+        // coloured cell out of line.
+        let gap = 14usize.saturating_sub(crate::output::display_width(&reclaimable));
         let _ = writeln!(
             out,
-            "  {}{}{}{}",
+            "  {}{}{}{}{}",
             // Elide from the left: every row here shares a long prefix, so the
             // tail is the only part that distinguishes them.
-            pad_right(
-                &crate::output::elide_start(label, name_width),
-                name_width + 2
-            ),
+            pad_right(&theme.elide_start(label, name_width), name_width + 2),
             pad_left(&ByteSize(*bytes).to_string(), SIZE_COLUMN),
-            pad_left(&painted, 14 + (painted.len() - reclaimable.len())),
+            " ".repeat(gap),
+            painted,
             pad_left(confidence, 12)
         );
     }
@@ -223,7 +231,7 @@ pub fn cleanup_report(plan: &CleanupPlan, theme: &Theme, known: &KnownPaths) -> 
             let _ = writeln!(
                 out,
                 "{marker} {index}{}{}",
-                pad_right(&truncate(&group.title, label_width), label_width + 2),
+                pad_right(&theme.truncate(&group.title, label_width), label_width + 2),
                 pad_left(&ByteSize(group.bytes).to_string(), SIZE_COLUMN)
             );
             if group.external {
@@ -253,7 +261,7 @@ pub fn cleanup_report(plan: &CleanupPlan, theme: &Theme, known: &KnownPaths) -> 
                 out,
                 "{} {}{}",
                 theme.danger(theme.safety_glyph(CleanupSafety::NeverDelete)),
-                pad_right(&truncate(&row.label, label_width), label_width + 6),
+                pad_right(&theme.truncate(&row.label, label_width), label_width + 6),
                 pad_left(&ByteSize(row.bytes).to_string(), SIZE_COLUMN)
             );
         }
@@ -323,10 +331,7 @@ pub fn execution_report(report: &ExecutionReport, theme: &Theme, known: &KnownPa
             "  {} {}  {}",
             theme.safe(theme.safety_glyph(CleanupSafety::Safe)),
             // Elide from the left: the tail of a path is what identifies it.
-            pad_right(
-                &crate::output::elide_start(&known.display(&removal.path), 52),
-                54
-            ),
+            pad_right(&theme.elide_start(&known.display(&removal.path), 52), 54),
             pad_left(&ByteSize(removal.bytes).to_string(), SIZE_COLUMN)
         );
     }
@@ -438,10 +443,7 @@ pub fn largest_directories(
         let mut line = format!(
             "{}. {}{}",
             pad_left(&(rank + 1).to_string(), 2),
-            pad_right(
-                &crate::output::elide_start(&path, name_width),
-                name_width + 2
-            ),
+            pad_right(&theme.elide_start(&path, name_width), name_width + 2),
             pad_left(&ByteSize(*bytes).to_string(), SIZE_COLUMN)
         );
         if let Some(detection) = &node.detection {
@@ -498,10 +500,7 @@ pub fn largest_files(
             out,
             "{}. {}{}   {}",
             pad_left(&(rank + 1).to_string(), 2),
-            pad_right(
-                &crate::output::elide_start(&path, name_width),
-                name_width + 2
-            ),
+            pad_right(&theme.elide_start(&path, name_width), name_width + 2),
             pad_left(&ByteSize(entry.size).to_string(), SIZE_COLUMN),
             theme.dim(&annotation)
         );
@@ -854,7 +853,10 @@ pub fn diff_report(diff: &Diff, theme: &Theme) -> String {
         return out;
     }
 
-    for change in diff.categories.iter().take(10) {
+    // The same row cap and noise floor as `growth`, and the same counted tail
+    // line: the eleventh change used to vanish with no sign it existed.
+    let categories = reportable(&diff.categories);
+    for change in &categories.shown {
         let _ = writeln!(
             out,
             "  {}  {}",
@@ -862,11 +864,13 @@ pub fn diff_report(diff: &Diff, theme: &Theme) -> String {
             change.label
         );
     }
+    out.push_str(&categories.hidden_note(theme));
 
     if !diff.directories.is_empty() {
         let _ = writeln!(out);
         let _ = writeln!(out, "{}", theme.heading("By directory"));
-        for change in diff.directories.iter().take(10) {
+        let directories = reportable(&diff.directories);
+        for change in &directories.shown {
             let _ = writeln!(
                 out,
                 "  {}  {}",
@@ -874,6 +878,7 @@ pub fn diff_report(diff: &Diff, theme: &Theme) -> String {
                 change.label
             );
         }
+        out.push_str(&directories.hidden_note(theme));
     }
 
     let _ = writeln!(out);
@@ -1020,7 +1025,8 @@ pub fn growth_report(
                     "  {}  {}{}",
                     pad_left(&signed(change.delta), SIZE_COLUMN),
                     match &annotation {
-                        Some(_) => pad_right(&elide_start(&change.label, label_width), label_width),
+                        Some(_) =>
+                            pad_right(&theme.elide_start(&change.label, label_width), label_width),
                         None => change.label.clone(),
                     },
                     match &annotation {
@@ -1438,6 +1444,27 @@ mod tests {
         let rows = reportable(&changes);
         assert_eq!(rows.shown.len(), 1);
         assert_eq!(rows.hidden, 0);
+    }
+
+    #[test]
+    fn diff_counts_the_changes_it_does_not_list() {
+        let directories: Vec<crate::history::Change> = (0..12)
+            .map(|i| crate::history::Change {
+                label: format!("dir{i}"),
+                delta: (12 - i) << 20,
+            })
+            .collect();
+        let diff = Diff {
+            from: 0,
+            to: 86_400,
+            categories: Vec::new(),
+            net: directories.iter().map(|change| change.delta).sum(),
+            directories,
+        };
+        let text = diff_report(&diff, &Theme::new(ColorMode::Never, true));
+        assert!(text.contains("dir9"), "{text}");
+        assert!(!text.contains("dir10"), "{text}");
+        assert!(text.contains("and 2 smaller changes"), "{text}");
     }
 
     #[test]

@@ -712,6 +712,131 @@ fn ascii_mode_avoids_box_drawing_characters() {
 }
 
 #[test]
+fn ascii_mode_writes_only_ascii() {
+    // The glyph set covered tree lines and bars, while the prose around them
+    // still carried dashes, ellipses and arrows. The fixture's names are all
+    // ASCII, so every byte of the report must be too.
+    let fixture = Fixture::new();
+    sample(&fixture);
+    let state = Fixture::new();
+    let root = fixture.path().to_string_lossy().into_owned();
+
+    for args in [
+        vec!["scan", root.as_str(), "--reclaim", "--tree"],
+        vec!["clean", root.as_str(), "--dry-run"],
+        vec!["explain", root.as_str()],
+        vec!["largest", root.as_str()],
+    ] {
+        let mut args = args;
+        args.extend(["--ascii", "--no-progress"]);
+        let output = run(state.path(), &args);
+        assert!(output.status.success(), "{args:?} failed");
+        let text = stdout(&output);
+        let stray: String = text.chars().filter(|ch| !ch.is_ascii()).collect();
+        assert!(stray.is_empty(), "{args:?} printed {stray:?}:\n{text}");
+    }
+}
+
+/// Strip SGR escape sequences, leaving what a terminal would display.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            for next in chars.by_ref() {
+                if next == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+#[test]
+fn the_reclaimable_column_lines_up_when_coloured() {
+    let fixture = Fixture::new();
+    sample(&fixture);
+    let state = Fixture::new();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bloatrail"))
+        .args([
+            "scan",
+            &fixture.path().to_string_lossy(),
+            "--reclaim",
+            "--no-progress",
+        ])
+        .env("BLOATRAIL_HOME", state.path())
+        .env_remove("NO_COLOR")
+        .env("CLICOLOR_FORCE", "1")
+        .output()
+        .expect("failed to run bloatrail");
+    assert!(output.status.success());
+    let raw = stdout(&output);
+    assert!(raw.contains('\x1b'), "colour was not forced on");
+
+    let text = strip_ansi(&raw);
+    let table: Vec<&str> = text
+        .lines()
+        .skip_while(|line| !line.contains("Reclaimable storage"))
+        .skip(2)
+        .take_while(|line| !line.trim().is_empty())
+        .collect();
+    assert!(table.len() >= 3, "too few rows:\n{text}");
+
+    // Every row, coloured or not, ends its reclaimable cell in the column the
+    // header does: the confidence column is right-aligned after it.
+    let widths: Vec<usize> = table
+        .iter()
+        .map(|line| unicode_width(line.trim_end()))
+        .collect();
+    assert!(
+        widths.windows(2).all(|pair| pair[0] == pair[1]),
+        "rows end at different columns {widths:?}:\n{}",
+        table.join("\n")
+    );
+}
+
+fn unicode_width(text: &str) -> usize {
+    // Every character in this table is one column wide.
+    text.chars().count()
+}
+
+#[test]
+fn largest_json_honours_min_size() {
+    let fixture = Fixture::new();
+    fixture.file("big/blob.bin", 64 * 1024);
+    fixture.file("small/note.txt", 100);
+    let state = Fixture::new();
+
+    let output = run(
+        state.path(),
+        &[
+            "largest",
+            &fixture.path().to_string_lossy(),
+            "--json",
+            "--min-size",
+            "10KB",
+            "--no-progress",
+        ],
+    );
+    assert!(output.status.success());
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    for key in ["directories", "files"] {
+        let rows = document[key].as_array().expect(key);
+        assert!(!rows.is_empty(), "{key} is empty");
+        for row in rows {
+            assert!(
+                row["bytes"].as_u64().unwrap() >= 10_000,
+                "{key} lists {row} under the floor"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_missing_path_fails_with_a_readable_message() {
     let state = Fixture::new();
     let output = run(state.path(), &["scan", "/definitely/not/a/real/path/xyzzy"]);

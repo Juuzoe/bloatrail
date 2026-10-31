@@ -108,6 +108,28 @@ impl Theme {
         self.glyphs
     }
 
+    /// The marker for elided text: `…`, or `...` under `--ascii`.
+    #[must_use]
+    pub fn ellipsis(&self) -> &'static str {
+        if self.ascii {
+            "..."
+        } else {
+            "…"
+        }
+    }
+
+    /// [`truncate`] with this theme's ellipsis.
+    #[must_use]
+    pub fn truncate(&self, text: &str, width: usize) -> String {
+        truncate_with(text, width, self.ellipsis())
+    }
+
+    /// [`elide_start`] with this theme's ellipsis.
+    #[must_use]
+    pub fn elide_start(&self, text: &str, width: usize) -> String {
+        elide_start_with(text, width, self.ellipsis())
+    }
+
     /// Wrap `text` in `style` when colour is enabled.
     #[must_use]
     pub fn paint(&self, style: Style, text: &str) -> String {
@@ -281,12 +303,19 @@ pub fn pad_left(text: &str, width: usize) -> String {
 /// Shorten a path from the left so the informative tail stays visible.
 #[must_use]
 pub fn elide_start(text: &str, width: usize) -> String {
-    if display_width(text) <= width || width < 4 {
+    elide_start_with(text, width, "…")
+}
+
+/// [`elide_start`] with a chosen ellipsis, which counts against `width`.
+#[must_use]
+pub fn elide_start_with(text: &str, width: usize, ellipsis: &str) -> String {
+    let marker = display_width(ellipsis);
+    if display_width(text) <= width || width < marker + 3 {
         return text.to_string();
     }
 
     // Take characters from the end until one more would overflow the budget.
-    let budget = width - 1;
+    let budget = width - marker;
     let mut used = 0usize;
     let mut start = text.len();
     for (index, ch) in text.char_indices().rev() {
@@ -298,8 +327,8 @@ pub fn elide_start(text: &str, width: usize) -> String {
         start = index;
     }
 
-    let mut out = String::with_capacity(text.len() - start + 4);
-    out.push('…');
+    let mut out = String::with_capacity(text.len() - start + ellipsis.len());
+    out.push_str(ellipsis);
     out.push_str(&text[start..]);
     out
 }
@@ -307,11 +336,17 @@ pub fn elide_start(text: &str, width: usize) -> String {
 /// Shorten text from the right.
 #[must_use]
 pub fn truncate(text: &str, width: usize) -> String {
+    truncate_with(text, width, "…")
+}
+
+/// [`truncate`] with a chosen ellipsis, which counts against `width`.
+#[must_use]
+pub fn truncate_with(text: &str, width: usize, ellipsis: &str) -> String {
     if display_width(text) <= width || width == 0 {
         return text.to_string();
     }
 
-    let budget = width.saturating_sub(1);
+    let budget = width.saturating_sub(display_width(ellipsis));
     let mut used = 0usize;
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
@@ -322,8 +357,41 @@ pub fn truncate(text: &str, width: usize) -> String {
         used += ch_width;
         out.push(ch);
     }
-    out.push('…');
+    out.push_str(ellipsis);
     out
+}
+
+/// Replace the typographic punctuation in report prose with ASCII.
+///
+/// `--ascii` exists for terminals and log collectors that cannot render
+/// Unicode, and the glyph set only covers tree lines and bars. Sentences
+/// still carry dashes, ellipses and arrows, so `--ascii` output is folded
+/// through this before it is written. Characters with no ASCII spelling here
+/// (a non-Latin file name, say) are data and are left alone.
+#[must_use]
+pub fn fold_to_ascii(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.is_ascii() {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '…' => out.push_str("..."),
+            '—' | '–' | '‒' | '―' => out.push('-'),
+            '·' | '•' => out.push('-'),
+            '→' => out.push_str("->"),
+            '←' => out.push_str("<-"),
+            '×' => out.push('x'),
+            '‘' | '’' | '′' => out.push('\''),
+            '“' | '”' | '″' => out.push('"'),
+            '≈' => out.push('~'),
+            '≤' => out.push_str("<="),
+            '≥' => out.push_str(">="),
+            '\u{a0}' | '\u{2009}' | '\u{202f}' => out.push(' '),
+            other => out.push(other),
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 #[cfg(test)]

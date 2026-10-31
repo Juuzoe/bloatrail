@@ -160,6 +160,19 @@ pub fn format_rate(bytes: u64, seconds: f64) -> String {
     format!("{}/s", ByteSize(per_second))
 }
 
+/// Format a count per second such as `48,210 files/s`.
+///
+/// Used for scan speed in place of [`format_rate`]: a scan reads metadata,
+/// not file contents, so the honest unit of work is the entry.
+#[must_use]
+pub fn format_count_rate(count: u64, seconds: f64, unit: &str) -> String {
+    if seconds <= 0.0 {
+        return "-".to_string();
+    }
+    let per_second = (count as f64 / seconds).round() as u64;
+    format!("{} {unit}/s", format_count(per_second))
+}
+
 /// Error returned when a size string cannot be understood.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("invalid size `{input}`: expected something like `10MB`, `1.5GiB` or `512`")]
@@ -352,5 +365,11 @@ mod tests {
     fn rate_formatting_handles_zero_duration() {
         assert_eq!(format_rate(100, 0.0), "-");
         assert_eq!(format_rate(2 * UNIT.pow(3), 1.0), "2.0 GB/s");
+    }
+
+    #[test]
+    fn count_rates_are_grouped_and_named() {
+        assert_eq!(format_count_rate(96_420, 2.0, "files"), "48,210 files/s");
+        assert_eq!(format_count_rate(10, 0.0, "files"), "-");
     }
 }

@@ -484,13 +484,17 @@ pub struct DirectoryRow {
 
 /// Build the `largest` document.
 #[must_use]
-pub fn largest_document(scan: &ScanResult, limit: usize) -> LargestDocument {
+pub fn largest_document(scan: &ScanResult, limit: usize, min_size: u64) -> LargestDocument {
+    // The same floor-then-limit order as the terminal list, so `--json` and
+    // the table name the same entries for the same flags.
     LargestDocument {
         schema_version: SCHEMA_VERSION,
         root: display(&scan.root),
         directories: scan
-            .largest_directories(limit)
+            .largest_directories(usize::MAX)
             .into_iter()
+            .filter(|(_, bytes)| *bytes >= min_size)
+            .take(limit)
             .map(|(id, bytes)| DirectoryRow {
                 path: display(&scan.tree.path_of(id)),
                 bytes,
@@ -505,6 +509,7 @@ pub fn largest_document(scan: &ScanResult, limit: usize) -> LargestDocument {
         files: scan
             .largest_files
             .iter()
+            .filter(|entry| entry.size >= min_size)
             .take(limit)
             .map(|entry| FileView {
                 path: display(&entry.path),

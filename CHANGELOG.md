@@ -89,6 +89,25 @@ removed.
   data supports rather than an invention.
 - Two scans recorded within the same second no longer overwrite each other.
 
+### Output
+
+- `--ascii` now produces ASCII. The glyph set covered tree lines and bars,
+  while the prose around them still carried dashes, ellipses and arrows;
+  report text is folded to ASCII before it is written, and elided paths end
+  in `...` with the width budget adjusted so columns still line up. JSON is
+  left as serialised.
+- Scan speed is reported in files a second instead of bytes. Sizes come from
+  metadata without reading file contents, so `118 GB/s` described the files
+  rather than the scan.
+- The scan progress block measures its lines in display columns. A path with
+  CJK characters used to wrap a line, and every redraw then left a stale row
+  behind.
+- `largest --json` applies `--min-size`, as the table always did.
+- `diff` counts the changes past its ten-row limit in a closing line, the way
+  `growth` does, instead of dropping them without a word.
+- The reclaimable column pads the plain figure and colours it afterwards,
+  rather than relying on how the width library counts escape bytes.
+
 ### Snapshots
 
 - Snapshots record the volume's capacity and free space and the recoverable

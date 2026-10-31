@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::units::{format_bytes, format_count, format_rate};
+use crate::units::{format_bytes, format_count, format_count_rate};
 
 /// Counters written by scanner threads and read by the renderer.
 #[derive(Debug, Default)]
@@ -199,7 +199,13 @@ fn draw(snapshot: &Snapshot, elapsed: f64, redraw: bool) {
     line("Files", &format_count(snapshot.files), &mut body);
     line("Directories", &format_count(snapshot.dirs), &mut body);
     line("Scanned", &format_bytes(snapshot.bytes), &mut body);
-    line("Speed", &format_rate(snapshot.bytes, elapsed), &mut body);
+    // Entries, not bytes: sizes come from metadata, so bytes a second would
+    // measure how large the files are rather than how fast the scan runs.
+    line(
+        "Speed",
+        &format_count_rate(snapshot.files, elapsed, "files"),
+        &mut body,
+    );
     line("Current", &snapshot.current, &mut body);
     out.push_str(&body);
 
@@ -220,18 +226,19 @@ fn erase() {
     let _ = stderr.flush();
 }
 
-/// Append `text`, truncating on a character boundary so multi-byte paths never
-/// produce mangled output.
+/// Append `text`, cut to fit one terminal row.
+///
+/// Measured in display columns, not characters: a CJK path is two columns a
+/// character, and a line that wraps adds a row the cursor-up redraw does not
+/// know about, so every refresh would leave a stale line behind. One column
+/// is left free because some consoles wrap on writing the last one. The
+/// ellipsis is ASCII because this block has no theme to ask about `--ascii`.
 fn push_truncated(out: &mut String, text: &str, width: usize) {
-    if text.chars().count() <= width {
-        out.push_str(text);
-        return;
-    }
-    let keep = width.saturating_sub(1);
-    for ch in text.chars().take(keep) {
-        out.push(ch);
-    }
-    out.push('…');
+    out.push_str(&crate::output::truncate_with(
+        text,
+        width.saturating_sub(1),
+        "...",
+    ));
 }
 
 #[cfg(test)]
@@ -258,9 +265,18 @@ mod tests {
     #[test]
     fn truncation_respects_character_boundaries() {
         let mut out = String::new();
-        push_truncated(&mut out, "ααααααααββββ", 5);
-        assert_eq!(out.chars().count(), 5);
-        assert!(out.ends_with('…'));
+        push_truncated(&mut out, "ααααααααββββ", 6);
+        assert_eq!(out, "αα...");
+    }
+
+    #[test]
+    fn truncation_counts_columns_not_characters() {
+        // Each ideograph is two columns: eight of them would wrap a row ten
+        // columns wide and desynchronise the redraw.
+        let mut out = String::new();
+        push_truncated(&mut out, "開発者の書類の保管", 10);
+        assert!(crate::output::display_width(&out) <= 9, "{out}");
+        assert!(out.ends_with("..."));
     }
 
     #[test]

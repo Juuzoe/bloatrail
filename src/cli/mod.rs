@@ -307,11 +307,20 @@ impl Context {
 
     /// Write a rendered report to stdout.
     ///
+    /// Under `--ascii` the report's punctuation is folded to ASCII here, in
+    /// one place, rather than by every renderer. JSON is left exactly as
+    /// serialised: it is data, and `--ascii` describes the terminal.
+    ///
     /// # Errors
     ///
     /// Fails on write errors other than a closed pipe.
     pub fn emit(&self, text: &str) -> Result<()> {
-        crate::output::emit(text).context("failed to write output")
+        let text = if self.theme.ascii() && !self.json {
+            crate::output::fold_to_ascii(text)
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        };
+        crate::output::emit(&text).context("failed to write output")
     }
 }
 

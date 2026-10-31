@@ -828,8 +828,10 @@ none have been measured on a machine you could compare against.
   volume prefix and refuses to traverse reparse points, which gives the same
   practical guarantee without a syscall per directory.
 - Sizes are apparent sizes, not on-disk allocation. Sparse files and compressed
-  filesystems report more than they physically occupy. The throughput figure is
-  therefore "bytes analysed per second", not disk bandwidth.
+  filesystems report more than they physically occupy. Sizes come from
+  metadata without reading the files, which is why scan speed is reported in
+  files a second: a bytes-a-second figure would measure how large the files
+  are, not how fast anything ran.
 - Traversal stops at 400 levels of nesting. The walk is recursive, so unbounded
   depth means an unbounded stack, and a stack overflow aborts the process
   instead of raising an error. Anything deeper is reported as skipped. No real
