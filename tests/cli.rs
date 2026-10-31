@@ -563,6 +563,7 @@ fn snapshots_recorded_in_the_same_second_are_both_kept() {
         disk_total: None,
         disk_available: None,
         reclaimable: None,
+        coverage: None,
     };
     let first = bloatrail::history::save(&snapshot).expect("first save");
     let second = bloatrail::history::save(&snapshot).expect("second save");
@@ -604,6 +605,153 @@ fn growth_json_is_machine_readable() {
         assert!(point["reclaimable"].is_u64());
     }
     assert!(document["net"].as_i64().expect("net") > 0);
+}
+
+fn json(output: &Output) -> serde_json::Value {
+    assert!(output.status.success(), "{output:?}");
+    serde_json::from_str(&stdout(output)).expect("output should be valid JSON")
+}
+
+/// Every snapshot recorded under `state`, oldest first.
+fn stored_snapshots(state: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![state.join("history")];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .expect("history directory")
+            .flatten()
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|e| e == "json") {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+#[test]
+fn identical_coverage_is_compared_exactly_as_before() {
+    let fixture = Fixture::new();
+    sample(&fixture);
+    let state = Fixture::new();
+    let root = fixture.path().to_string_lossy().into_owned();
+
+    run(state.path(), &["scan", &root, "--no-progress"]);
+    fixture.file("api/target/debug/extra.bin", 5_000_000);
+    run(state.path(), &["scan", &root, "--no-progress"]);
+
+    let diff = json(&run(state.path(), &["diff", &root, "--stored", "--json"]));
+    assert_eq!(diff["coverage_changed"], false);
+    assert_eq!(diff["net"], 5_000_000);
+
+    let growth = json(&run(state.path(), &["growth", &root, "--stored", "--json"]));
+    assert!(growth.get("coverage_changed_at").is_none());
+    assert_eq!(growth["earlier_scans"], 0);
+    assert_eq!(growth["points"].as_array().expect("points").len(), 2);
+    assert_eq!(growth["net"], 5_000_000);
+
+    let text = stdout(&run(state.path(), &["growth", &root, "--stored"]));
+    assert!(!text.contains("Coverage changed"));
+    assert!(!text.contains("different rules"));
+}
+
+#[test]
+fn a_coverage_change_is_reported_as_such_and_not_as_growth() {
+    let fixture = Fixture::new();
+    sample(&fixture);
+    // A dot-directory no rule walks by default: invisible to the first scan,
+    // counted by the second, and not one byte of it new.
+    fixture.file(".private-store/blob.bin", 3_000_000);
+    let state = Fixture::new();
+    let root = fixture.path().to_string_lossy().into_owned();
+
+    run(state.path(), &["scan", &root, "--no-progress"]);
+    run(
+        state.path(),
+        &["scan", &root, "--no-progress", "--include-hidden"],
+    );
+
+    // `diff` still answers "what changed since last time", but says that the
+    // two scans did not count the same things.
+    let diff = json(&run(state.path(), &["diff", &root, "--stored", "--json"]));
+    assert_eq!(diff["coverage_changed"], true);
+    assert_eq!(diff["net"], 3_000_000, "the figures are still reported");
+    let text = stdout(&run(state.path(), &["diff", &root, "--stored"]));
+    assert!(text.contains("counted under different rules"));
+    assert!(text.contains("including the change in coverage"));
+
+    // `growth` measures from the change: nothing comparable has happened yet.
+    let growth = json(&run(state.path(), &["growth", &root, "--stored", "--json"]));
+    assert!(growth["coverage_changed_at"].is_u64());
+    assert_eq!(growth["earlier_scans"], 1);
+    assert_eq!(growth["points"].as_array().expect("points").len(), 1);
+    assert_eq!(growth["net"], 0, "3 MB newly counted is not 3 MB of growth");
+    assert!(growth["categories"]
+        .as_array()
+        .expect("categories")
+        .is_empty());
+    let text = stdout(&run(state.path(), &["growth", &root, "--stored"]));
+    assert!(text.contains("Coverage changed"));
+    assert!(text.contains("First scan under the current rules"));
+    assert!(!text.contains("Net change"));
+
+    // Real growth after the change is measured from it.
+    fixture.file("api/target/debug/extra.bin", 5_000_000);
+    run(
+        state.path(),
+        &["scan", &root, "--no-progress", "--include-hidden"],
+    );
+    let growth = json(&run(state.path(), &["growth", &root, "--stored", "--json"]));
+    assert_eq!(growth["earlier_scans"], 1);
+    assert_eq!(growth["points"].as_array().expect("points").len(), 2);
+    assert_eq!(growth["net"], 5_000_000);
+}
+
+#[test]
+fn scans_recorded_before_coverage_was_tracked_are_not_compared_as_growth() {
+    let fixture = Fixture::new();
+    sample(&fixture);
+    let state = Fixture::new();
+    let root = fixture.path().to_string_lossy().into_owned();
+
+    // Record a scan, then strip its coverage stamp: that is exactly what a
+    // snapshot written by 0.3.0 looks like.
+    run(state.path(), &["scan", &root, "--no-progress"]);
+    let stored = stored_snapshots(state.path());
+    assert_eq!(stored.len(), 1);
+    let mut snapshot: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&stored[0]).unwrap()).unwrap();
+    let stamp = snapshot
+        .as_object_mut()
+        .unwrap()
+        .remove("coverage")
+        .expect("a scan records its coverage");
+    assert!(stamp.is_string());
+    std::fs::write(&stored[0], snapshot.to_string()).unwrap();
+
+    fixture.file("api/target/debug/extra.bin", 100_000);
+    let diff = json(&run(
+        state.path(),
+        &["diff", &root, "--json", "--no-progress"],
+    ));
+    assert_eq!(
+        diff["coverage_changed"], true,
+        "what an unstamped scan counted is unknown"
+    );
+
+    let growth = json(&run(state.path(), &["growth", &root, "--stored", "--json"]));
+    assert_eq!(growth["earlier_scans"], 1);
+    assert_eq!(growth["points"].as_array().expect("points").len(), 1);
+    assert_eq!(growth["net"], 0);
+    // The volume trend reads free space, which the scanner's rules do not
+    // touch, so the unstamped scan still counts towards it.
+    if let Some(volume) = growth.get("volume") {
+        assert!(volume["first_timestamp"].as_u64() <= growth["coverage_changed_at"].as_u64());
+    }
 }
 
 #[test]

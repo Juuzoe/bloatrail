@@ -732,6 +732,13 @@ pub struct DiffDocument {
     pub directories: Vec<ChangeView>,
     /// Net byte change.
     pub net: i64,
+    /// `true` when the two scans were counted under different coverage — a
+    /// Bloatrail upgrade, or different hidden-directory, symlink or exclude
+    /// settings — so part of every figure above is a change in what was
+    /// counted rather than a change on disk. A scan recorded before coverage
+    /// was tracked counts as different from one recorded after.
+    #[serde(default)]
+    pub coverage_changed: bool,
 }
 
 /// One change.
@@ -763,6 +770,7 @@ pub fn diff_document(root: &Path, diff: &Diff) -> DiffDocument {
         categories: convert(&diff.categories),
         directories: convert(&diff.directories),
         net: diff.net,
+        coverage_changed: diff.coverage_changed,
     }
 }
 
@@ -773,7 +781,8 @@ pub struct GrowthDocument {
     pub schema_version: u32,
     /// The scanned path.
     pub root: String,
-    /// Every recorded scan, oldest first.
+    /// The recorded scans counted under the newest scan's coverage, oldest
+    /// first. Every recorded scan when coverage never changed.
     pub points: Vec<GrowthPointView>,
     /// Seconds between the first and last point.
     pub span_seconds: u64,
@@ -783,12 +792,23 @@ pub struct GrowthDocument {
     pub directories: Vec<ChangeView>,
     /// Net byte change in the scanned tree.
     pub net: i64,
-    /// The volume's trajectory, when enough scans recorded free space.
+    /// The volume's trajectory, when enough scans recorded free space. Uses
+    /// every recorded scan, including those before a coverage change.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<VolumeTrendView>,
     /// Bytes judged recoverable at the most recent scan.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reclaimable_now: Option<u64>,
+    /// When coverage last changed within the record: the timestamp of the
+    /// first scan counted under the current rules, where `points` and the
+    /// changes above begin. Absent when every recorded scan was counted the
+    /// same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_changed_at: Option<u64>,
+    /// Recorded scans before that change, left out of `points`, `span_seconds`,
+    /// the changes and `net` because they counted a different set of bytes.
+    #[serde(default)]
+    pub earlier_scans: usize,
 }
 
 /// One recorded scan in the growth series.
@@ -876,6 +896,8 @@ pub fn growth_document(root: &Path, growth: &crate::history::Growth) -> GrowthDo
         net: growth.net,
         volume,
         reclaimable_now: growth.reclaimable_now,
+        coverage_changed_at: growth.coverage_changed_at,
+        earlier_scans: growth.earlier_scans,
     }
 }
 
@@ -969,6 +991,7 @@ mod tests {
             duration: Duration::from_millis(1_500),
             started_at: SystemTime::UNIX_EPOCH,
             cancelled: false,
+            coverage: String::new(),
         }
     }
 

@@ -153,6 +153,60 @@ fn developer_dot_directories_are_always_traversed() {
 }
 
 #[test]
+fn shared_tool_homes_are_counted_without_include_hidden() {
+    let fixture = Fixture::new();
+    fixture.file("home/.julia/packages/Example/abc/src/Example.jl", 3000);
+    fixture.file(
+        "home/.pub-cache/hosted/pub.dev/http-1.2.0/lib/http.dart",
+        2000,
+    );
+    fixture.file("home/.stack/pantry/hackage/00-index.tar", 1000);
+    // A VM home keeps an SSH key beside the disk, so it is walked only when
+    // asked for, like any other dot-directory.
+    fixture.file("home/.lima/default/diffdisk", 7000);
+    fixture.file("home/.lima/_config/user", 100);
+
+    let scan = fixture.scan();
+    for store in ["home/.julia", "home/.pub-cache", "home/.stack"] {
+        assert!(node_named(&scan, store).is_some(), "{store} must be walked");
+    }
+    assert!(node_named(&scan, "home/.lima").is_none());
+    assert_eq!(scan.totals.bytes, 6000);
+
+    let all = fixture.scan_with(|options| options.include_hidden = true);
+    assert_eq!(all.totals.bytes, 13_100);
+}
+
+#[test]
+fn a_scan_records_the_coverage_it_was_counted_under() {
+    let fixture = Fixture::new();
+    fixture.file("a.bin", 10);
+    let known = bloatrail::platform::KnownPaths::empty();
+
+    let default = fixture.scan();
+    assert_eq!(
+        default.coverage,
+        bloatrail::scanner::coverage_stamp(
+            &bloatrail::scanner::ScanOptions::new(fixture.path()),
+            &known
+        )
+    );
+    assert_eq!(
+        fixture.scan().coverage,
+        default.coverage,
+        "stable across runs"
+    );
+
+    let hidden = fixture.scan_with(|options| options.include_hidden = true);
+    assert_ne!(
+        hidden.coverage, default.coverage,
+        "walking every hidden directory counts different bytes"
+    );
+    let excluded = fixture.scan_with(|options| options.excludes = ExcludeSet::new(["*.iso"]));
+    assert_ne!(excluded.coverage, default.coverage);
+}
+
+#[test]
 fn a_pnpm_node_modules_reports_the_packages_inside_it() {
     let fixture = Fixture::new();
     fixture.write("app/package.json", b"{}");

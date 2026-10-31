@@ -8,6 +8,8 @@ pub mod progress;
 pub mod tree;
 mod walker;
 
+pub use walker::ALWAYS_TRAVERSED;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -198,6 +200,8 @@ pub struct ScanResult {
     pub started_at: SystemTime,
     /// `true` when the scan was stopped early. Totals are a lower bound.
     pub cancelled: bool,
+    /// Fingerprint of what this scan counted; see [`coverage_stamp`].
+    pub coverage: String,
 }
 
 impl ScanResult {
@@ -285,6 +289,7 @@ pub fn scan_with_progress(
 
     Ok(ScanResult {
         cancelled: options.cancel.is_cancelled(),
+        coverage: coverage_stamp(&options, known),
         root: options.root,
         tree: result.tree,
         totals: result.totals,
@@ -295,6 +300,70 @@ pub fn scan_with_progress(
         duration: clock.elapsed(),
         started_at,
     })
+}
+
+/// A short, stable fingerprint of what a scan with these options counts.
+///
+/// History compares scans recorded weeks apart, by whatever version of
+/// Bloatrail was installed at the time and under whatever settings were in
+/// force. When those differ, so do the bytes a scan sees: a dot-directory
+/// added to [`ALWAYS_TRAVERSED`] is suddenly counted, a new well-known
+/// location moves gigabytes from one category to another, `--include-hidden`
+/// adds every hidden tree. Compared naively, each of those reads as growth.
+/// Every snapshot records this stamp so that `growth` and `diff` can tell a
+/// change in coverage from a change on disk.
+///
+/// The stamp hashes the inputs that decide which bytes are counted and where
+/// they are attributed: the hidden-directory policy (the always-traversed
+/// list, or the fact that every hidden directory is traversed), symlink and
+/// filesystem-boundary handling, the exclusion patterns as written, and the
+/// well-known location rules ([`KnownPaths::rules`]). It hashes no resolved
+/// path, so it is the same on every run and on every machine of one platform
+/// with the same settings. Scan root, thread count, progress and the
+/// staleness threshold are left out: none changes what is counted.
+#[must_use]
+pub fn coverage_stamp(options: &ScanOptions, known: &KnownPaths) -> String {
+    coverage_digest(ALWAYS_TRAVERSED, options, known)
+}
+
+/// [`coverage_stamp`] over an explicit always-traversed list, so tests can
+/// show that changing the list changes the stamp.
+fn coverage_digest(traversed: &[&str], options: &ScanOptions, known: &KnownPaths) -> String {
+    let mut hasher = blake3::Hasher::new();
+    let mut line = |text: &str| {
+        hasher.update(text.as_bytes());
+        hasher.update(b"\n");
+    };
+
+    // Versions the scheme itself: hashing differently must not collide with
+    // stamps written the old way.
+    line("bloatrail coverage 1");
+
+    if options.include_hidden {
+        // The list stops mattering when every hidden directory is walked.
+        line("hidden all");
+    } else {
+        let mut names = traversed.to_vec();
+        names.sort_unstable();
+        for name in names {
+            line(&format!("hidden traverse {name}"));
+        }
+    }
+    line(&format!("follow-symlinks {}", options.follow_symlinks));
+    line(&format!("same-filesystem {}", options.same_filesystem));
+
+    let mut excludes: Vec<&str> = options.excludes.iter().collect();
+    excludes.sort_unstable();
+    excludes.dedup();
+    for pattern in excludes {
+        line(&format!("exclude {pattern}"));
+    }
+
+    for rule in known.rules() {
+        line(&format!("known {rule}"));
+    }
+
+    hasher.finalize().to_hex()[..16].to_string()
 }
 
 /// Resolve and validate a scan root.
@@ -414,6 +483,103 @@ mod tests {
         assert!(!clone.is_cancelled());
         token.cancel();
         assert!(clone.is_cancelled());
+    }
+
+    #[test]
+    fn the_coverage_stamp_ignores_what_does_not_change_the_count() {
+        let known = KnownPaths::empty();
+        let base = ScanOptions::new("/a");
+        let stamp = coverage_stamp(&base, &known);
+        assert_eq!(stamp.len(), 16);
+        assert!(stamp.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(coverage_stamp(&base, &known), stamp, "deterministic");
+
+        let mut elsewhere = ScanOptions::new("/somewhere/else");
+        elsewhere.threads = Some(3);
+        elsewhere.stale_days = 7;
+        elsewhere.top_files = 5;
+        elsewhere.max_depth = Some(2);
+        elsewhere.show_progress = true;
+        assert_eq!(coverage_stamp(&elsewhere, &known), stamp);
+
+        let mut one_way = base.clone();
+        one_way.excludes = ExcludeSet::new(["*.iso", "~/VMs"]);
+        let mut other_way = base.clone();
+        other_way.excludes = ExcludeSet::new(["~/VMs", "*.iso", "*.iso"]);
+        assert_eq!(
+            coverage_stamp(&one_way, &known),
+            coverage_stamp(&other_way, &known),
+            "the order patterns were given in does not change what they exclude"
+        );
+    }
+
+    #[test]
+    fn the_coverage_stamp_changes_with_everything_that_changes_the_count() {
+        let known = KnownPaths::empty();
+        let base = ScanOptions::new("/a");
+        let stamp = coverage_stamp(&base, &known);
+
+        let mut hidden = base.clone();
+        hidden.include_hidden = true;
+        let mut follow = base.clone();
+        follow.follow_symlinks = true;
+        let mut one_volume = base.clone();
+        one_volume.same_filesystem = true;
+        let mut excluded = base.clone();
+        excluded.excludes = ExcludeSet::new(["*.iso"]);
+
+        let mut stamps = vec![stamp.clone()];
+        for options in [&hidden, &follow, &one_volume, &excluded] {
+            stamps.push(coverage_stamp(options, &known));
+        }
+        // The registry of well-known locations decides categories and which
+        // subtrees collapse, so a different one is different coverage.
+        stamps.push(coverage_stamp(&base, &KnownPaths::discover()));
+
+        let mut distinct = stamps.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), stamps.len(), "{stamps:?}");
+    }
+
+    #[test]
+    fn the_coverage_stamp_follows_the_always_traversed_list() {
+        let known = KnownPaths::empty();
+        let options = ScanOptions::new("/a");
+        let current = coverage_digest(ALWAYS_TRAVERSED, &options, &known);
+        assert_eq!(current, coverage_stamp(&options, &known));
+
+        // One name more or one name fewer is a different set of bytes.
+        let shorter = &ALWAYS_TRAVERSED[1..];
+        assert_ne!(coverage_digest(shorter, &options, &known), current);
+        let mut longer = ALWAYS_TRAVERSED.to_vec();
+        longer.push(".example-store");
+        assert_ne!(coverage_digest(&longer, &options, &known), current);
+
+        // The list's source order is presentation; reordering it is not a
+        // change in coverage.
+        let mut reversed = ALWAYS_TRAVERSED.to_vec();
+        reversed.reverse();
+        assert_eq!(coverage_digest(&reversed, &options, &known), current);
+
+        // With every hidden directory walked, the list no longer decides
+        // anything, and changing it must not restart anyone's history.
+        let mut hidden = options.clone();
+        hidden.include_hidden = true;
+        assert_eq!(
+            coverage_digest(shorter, &hidden, &known),
+            coverage_digest(ALWAYS_TRAVERSED, &hidden, &known)
+        );
+    }
+
+    #[test]
+    fn the_default_coverage_stamp_is_pinned() {
+        // The same value on every platform, which is the point: no machine
+        // detail goes in. When the always-traversed list changes, this value
+        // changes too, and every user's next `growth` starts a new window at
+        // the first scan recorded under it. Update it deliberately.
+        let stamp = coverage_stamp(&ScanOptions::new("/a"), &KnownPaths::empty());
+        assert_eq!(stamp, "239794fd5907a0c6");
     }
 
     #[test]

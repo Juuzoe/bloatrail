@@ -846,6 +846,17 @@ pub fn diff_report(diff: &Diff, theme: &Theme) -> String {
             timefmt::format_timestamp(diff.to)
         ))
     );
+    if diff.coverage_changed {
+        for line in [
+            "These two scans were counted under different rules, so part of this",
+            "difference is in what Bloatrail counts, not on disk.",
+        ] {
+            let _ = writeln!(out, "{}", theme.review(line));
+        }
+        for line in COVERAGE_CAUSES {
+            let _ = writeln!(out, "{}", theme.dim(line));
+        }
+    }
     let _ = writeln!(out);
 
     if diff.categories.is_empty() && diff.directories.is_empty() {
@@ -888,8 +899,83 @@ pub fn diff_report(diff: &Diff, theme: &Theme) -> String {
     } else {
         theme.safe(&net)
     };
-    let _ = writeln!(out, "Net change: {painted}");
+    if diff.coverage_changed {
+        let _ = writeln!(
+            out,
+            "Net change: {painted} {}",
+            theme.dim("(including the change in coverage)")
+        );
+    } else {
+        let _ = writeln!(out, "Net change: {painted}");
+    }
     out
+}
+
+/// What changes a scan's coverage, for the line under a coverage warning.
+/// Wrapped like the rest of the report's fixed prose.
+const COVERAGE_CAUSES: [&str; 2] = [
+    "A Bloatrail upgrade, or a change to the hidden-directory, symlink or",
+    "exclude settings, changes what a scan counts.",
+];
+
+/// The growth report's account of a coverage change inside the record, or
+/// nothing when every recorded scan was counted the same way.
+fn coverage_note(growth: &Growth, theme: &Theme) -> String {
+    let Some(changed_at) = growth.coverage_changed_at else {
+        return String::new();
+    };
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{}",
+        theme.review(&format!(
+            "Coverage changed on {}; growth is measured from then.",
+            timefmt::format_timestamp(changed_at)
+        ))
+    );
+    let (scans, verb) = if growth.earlier_scans == 1 {
+        ("scan was", "is")
+    } else {
+        ("scans were", "are")
+    };
+    let _ = writeln!(
+        out,
+        "{}",
+        theme.dim(&format!(
+            "{} earlier {scans} counted under different rules and {verb} left out.",
+            growth.earlier_scans
+        ))
+    );
+    for line in COVERAGE_CAUSES {
+        let _ = writeln!(out, "{}", theme.dim(line));
+    }
+    if growth.volume.is_some() {
+        let _ = writeln!(
+            out,
+            "{}",
+            theme.dim("The free-space trend below still uses every scan.")
+        );
+    }
+    out
+}
+
+/// The closing line: what is recoverable now, the same figure `clean` prints.
+fn recoverable_tail(growth: &Growth, fresh_scan: bool) -> String {
+    let Some(reclaimable) = growth.reclaimable_now.filter(|bytes| *bytes > 0) else {
+        return String::new();
+    };
+    let opening = if fresh_scan {
+        format!(
+            "Of what is here today, {} is recoverable",
+            ByteSize(reclaimable)
+        )
+    } else {
+        format!(
+            "The most recent scan judged {} recoverable",
+            ByteSize(reclaimable)
+        )
+    };
+    format!("\n{opening} — `bloatrail clean --dry-run` lists it.\n")
 }
 
 /// The `growth` report: every recorded scan as one trajectory.
@@ -913,6 +999,31 @@ pub fn growth_report(
         theme.info(&known.display(root))
     );
 
+    // A starting line drawn by a coverage change rather than a first run:
+    // there is a past, but none of it was counted the way this scan was.
+    if growth.points.len() < 2 && growth.coverage_changed_at.is_some() {
+        let point = &growth.points[0];
+        let _ = writeln!(
+            out,
+            "{}",
+            theme.dim(&format!(
+                "First scan under the current rules: {} on {}.",
+                ByteSize(point.bytes),
+                timefmt::format_date(point.timestamp)
+            ))
+        );
+        out.push_str(&coverage_note(growth, theme));
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "Growth is measured between scans counted the same way. `bloatrail scan` records\n\
+             one; after some time has passed this report will show what changed since."
+        );
+        out.push_str(&volume_section(growth, theme));
+        out.push_str(&recoverable_tail(growth, scan.is_some()));
+        return out;
+    }
+
     // The starting line. Every first run lands here, so it reads as the
     // beginning of something rather than a failure to have a past.
     if growth.points.len() < 2 {
@@ -929,9 +1040,10 @@ pub fn growth_report(
         let _ = writeln!(out);
         let _ = writeln!(
             out,
-            "Growth is measured between scans. Run `bloatrail scan` or `bloatrail growth`\n\
-             again after some time has passed — a day, a week, a build — and this report\n\
-             will show what changed and how fast this volume is filling."
+            "Growth is measured between scans. Run `bloatrail scan` again after some time\n\
+             has passed — a day, a week, a build — and this report will show what changed\n\
+             and how fast this volume is filling. (`growth` itself records only with\n\
+             `--record`.)"
         );
         return out;
     }
@@ -955,6 +1067,7 @@ pub fn growth_report(
             timefmt::format_timestamp(growth.points[growth.points.len() - 1].timestamp)
         ))
     );
+    out.push_str(&coverage_note(growth, theme));
     let _ = writeln!(out);
 
     // One row per recorded scan: when, how big, and — when the snapshot
@@ -1052,21 +1165,7 @@ pub fn growth_report(
 
     // The report ends with the way out. One figure, the same one `clean`
     // would print, never a promise about the growth itself.
-    if let Some(reclaimable) = growth.reclaimable_now.filter(|bytes| *bytes > 0) {
-        let _ = writeln!(out);
-        let opening = if scan.is_some() {
-            format!(
-                "Of what is here today, {} is recoverable",
-                ByteSize(reclaimable)
-            )
-        } else {
-            format!(
-                "The most recent scan judged {} recoverable",
-                ByteSize(reclaimable)
-            )
-        };
-        let _ = writeln!(out, "{opening} — `bloatrail clean --dry-run` lists it.");
-    }
+    out.push_str(&recoverable_tail(growth, scan.is_some()));
 
     out
 }
@@ -1078,12 +1177,7 @@ fn volume_section(growth: &Growth, theme: &Theme) -> String {
     let Some(trend) = &growth.volume else {
         // Snapshots from before free space was recorded cannot say anything
         // about the volume. Say why, and that the record heals itself.
-        let with_disk = growth
-            .points
-            .iter()
-            .filter(|p| p.disk_available.is_some())
-            .count();
-        if with_disk <= 1 {
+        if growth.recorded_free_space <= 1 {
             let _ = writeln!(out);
             let _ = writeln!(
                 out,
@@ -1401,11 +1495,107 @@ mod tests {
             net: 0,
             volume: None,
             reclaimable_now: None,
+            coverage_changed_at: None,
+            earlier_scans: 0,
+            recorded_free_space: 0,
         };
         let known = crate::platform::KnownPaths::empty();
         let text = growth_report(&growth, Path::new("/scan"), None, &theme, &known);
         assert!(text.contains("First scan recorded"));
         assert!(!text.contains("Net change"), "there is no change yet");
+        assert!(!text.contains("Coverage changed"));
+    }
+
+    fn point(timestamp: u64, bytes: u64) -> crate::history::GrowthPoint {
+        crate::history::GrowthPoint {
+            timestamp,
+            bytes,
+            disk_available: None,
+            reclaimable: None,
+        }
+    }
+
+    #[test]
+    fn a_coverage_change_is_named_before_any_growth_figure() {
+        let theme = Theme::new(ColorMode::Never, true);
+        let known = crate::platform::KnownPaths::empty();
+        let growth = crate::history::Growth {
+            points: vec![point(1_700_086_400, 2 << 20), point(1_700_172_800, 3 << 20)],
+            span: 86_400,
+            categories: vec![crate::history::Change {
+                label: "Caches".to_string(),
+                delta: 1 << 20,
+            }],
+            directories: Vec::new(),
+            net: 1 << 20,
+            volume: None,
+            reclaimable_now: None,
+            coverage_changed_at: Some(1_700_086_400),
+            earlier_scans: 3,
+            recorded_free_space: 0,
+        };
+        let text = growth_report(&growth, Path::new("/scan"), None, &theme, &known);
+        let note = text.find("Coverage changed").expect("the change is named");
+        assert!(text.contains("3 earlier scans were counted under different rules"));
+        assert!(
+            note < text.find("Where it went").expect("attribution"),
+            "the reader learns the window was cut before reading what grew in it"
+        );
+        assert!(
+            text.contains("2 scans"),
+            "only the comparable scans are counted"
+        );
+    }
+
+    #[test]
+    fn a_coverage_change_on_the_newest_scan_is_a_starting_line_not_a_first_run() {
+        let theme = Theme::new(ColorMode::Never, true);
+        let known = crate::platform::KnownPaths::empty();
+        let growth = crate::history::Growth {
+            points: vec![point(1_700_000_000, 1 << 20)],
+            span: 0,
+            categories: Vec::new(),
+            directories: Vec::new(),
+            net: 0,
+            volume: None,
+            reclaimable_now: Some(1 << 20),
+            coverage_changed_at: Some(1_700_000_000),
+            earlier_scans: 1,
+            recorded_free_space: 0,
+        };
+        let text = growth_report(&growth, Path::new("/scan"), None, &theme, &known);
+        assert!(text.contains("First scan under the current rules"));
+        assert!(text.contains("1 earlier scan was counted under different rules"));
+        assert!(!text.contains("First scan recorded"), "there is a past");
+        assert!(
+            !text.contains("Net change"),
+            "nothing comparable to measure"
+        );
+        assert!(text.contains("recoverable"));
+    }
+
+    #[test]
+    fn a_diff_across_a_coverage_change_says_so() {
+        let theme = Theme::new(ColorMode::Never, true);
+        let mut diff = crate::history::Diff {
+            from: 1_700_000_000,
+            to: 1_700_086_400,
+            categories: vec![crate::history::Change {
+                label: "Package caches".to_string(),
+                delta: 900,
+            }],
+            directories: Vec::new(),
+            net: 900,
+            coverage_changed: false,
+        };
+        let plain = diff_report(&diff, &theme);
+        assert!(!plain.contains("different rules"));
+        assert!(!plain.contains("including the change in coverage"));
+
+        diff.coverage_changed = true;
+        let flagged = diff_report(&diff, &theme);
+        assert!(flagged.contains("counted under different rules"));
+        assert!(flagged.contains("including the change in coverage"));
     }
 
     #[test]
@@ -1447,6 +1637,7 @@ mod tests {
             categories: Vec::new(),
             net: directories.iter().map(|change| change.delta).sum(),
             directories,
+            coverage_changed: false,
         };
         let text = diff_report(&diff, &Theme::new(ColorMode::Never, true));
         assert!(text.contains("dir9"), "{text}");

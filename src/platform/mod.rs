@@ -96,14 +96,20 @@ pub struct KnownPaths {
     lookup: HashMap<String, KnownEntry>,
     trigger_names: HashSet<String>,
     protected: Vec<PathBuf>,
+    /// Every registration as a machine-independent identity, sorted.
+    rules: Vec<String>,
 }
 
 impl KnownPaths {
     /// Discover the well-known locations for this machine.
     #[must_use]
     pub fn discover() -> Self {
-        let home = dirs::home_dir();
-        let mut builder = Builder::new(home.clone());
+        Self::build(dirs::home_dir())
+    }
+
+    /// The registry this platform builds around `home`.
+    fn build(home: Option<PathBuf>) -> Self {
+        let mut builder = Builder::new(home);
 
         builder.common();
         #[cfg(windows)]
@@ -128,7 +134,23 @@ impl KnownPaths {
             lookup: HashMap::new(),
             trigger_names: HashSet::new(),
             protected: Vec::new(),
+            rules: Vec::new(),
         }
+    }
+
+    /// The registered locations as rules rather than paths, sorted.
+    ///
+    /// Each rule names where a location is anchored (`~`, `%LOCALAPPDATA%`,
+    /// the Downloads folder), the path beneath that anchor as written in the
+    /// registry, and what the registration does to the bytes inside: their
+    /// category, and whether the subtree is collapsed or claimed. No resolved
+    /// path appears, so two machines with different user names, or one whose
+    /// Downloads folder lives on another drive, produce the same list, and a
+    /// rule counts whether or not its location exists here. This is what the
+    /// scan's coverage stamp hashes.
+    #[must_use]
+    pub fn rules(&self) -> &[String] {
+        &self.rules
     }
 
     /// Look up a directory by path. `name_lower` must be the lowercased final
@@ -213,34 +235,126 @@ pub fn is_filesystem_root(path: &Path) -> bool {
     }
 }
 
+/// Where a well-known location is rooted.
+///
+/// A registration names its anchor rather than a resolved path so that the
+/// rule itself carries no machine-specific detail: see [`KnownPaths::rules`].
+#[derive(Debug, Clone, Copy)]
+enum Anchor {
+    /// The user's home directory.
+    Home,
+    /// The platform's Downloads folder, wherever the user has moved it.
+    Downloads,
+    /// The platform's Documents folder.
+    Documents,
+    /// The platform's Videos folder.
+    Videos,
+    /// The platform's Pictures folder.
+    Pictures,
+    /// The platform's Music folder.
+    Music,
+    /// `%LOCALAPPDATA%`.
+    #[cfg(windows)]
+    LocalAppData,
+    /// `%APPDATA%`.
+    #[cfg(windows)]
+    RoamingAppData,
+    /// A fixed absolute path, the same on every machine.
+    #[cfg(unix)]
+    Fixed(&'static str),
+}
+
+impl Anchor {
+    /// How the anchor is written in a rule identity.
+    fn tag(self) -> &'static str {
+        match self {
+            Anchor::Home => "~",
+            Anchor::Downloads => "{downloads}",
+            Anchor::Documents => "{documents}",
+            Anchor::Videos => "{videos}",
+            Anchor::Pictures => "{pictures}",
+            Anchor::Music => "{music}",
+            #[cfg(windows)]
+            Anchor::LocalAppData => "%LOCALAPPDATA%",
+            #[cfg(windows)]
+            Anchor::RoamingAppData => "%APPDATA%",
+            #[cfg(unix)]
+            Anchor::Fixed(path) => path,
+        }
+    }
+}
+
+/// Stands for the current user's login name inside a registered path.
+///
+/// Bazel names its output root after the user (`_bazel_<user>`), so that one
+/// path cannot be written down without it. The rule keeps the placeholder; the
+/// resolved path gets the name.
+const USER: &str = "{user}";
+
+/// The login name tools put into per-user paths, as Bazel reads it.
+fn login_name() -> Option<String> {
+    let variable = if cfg!(windows) { "USERNAME" } else { "USER" };
+    std::env::var(variable).ok().filter(|name| !name.is_empty())
+}
+
 /// Builder that assembles the well-known location registry.
 struct Builder {
     home: Option<PathBuf>,
+    user: Option<String>,
     entries: Vec<(PathBuf, Detection)>,
     protected: Vec<PathBuf>,
+    rules: Vec<String>,
 }
 
 impl Builder {
     fn new(home: Option<PathBuf>) -> Self {
         Builder {
             home,
+            user: login_name(),
             entries: Vec::new(),
             protected: Vec::new(),
+            rules: Vec::new(),
         }
     }
 
-    /// Register `base/rel` if `base` exists.
-    fn add(&mut self, base: Option<PathBuf>, rel: &str, detection: Detection) {
-        let Some(base) = base else { return };
-        let path = if rel.is_empty() {
-            base
-        } else {
-            let mut p = base;
-            for part in rel.split('/') {
-                p.push(part);
-            }
-            p
+    fn resolve(&self, anchor: Anchor) -> Option<PathBuf> {
+        match anchor {
+            Anchor::Home => self.home.clone(),
+            Anchor::Downloads => dirs::download_dir(),
+            Anchor::Documents => dirs::document_dir(),
+            Anchor::Videos => dirs::video_dir(),
+            Anchor::Pictures => dirs::picture_dir(),
+            Anchor::Music => dirs::audio_dir(),
+            #[cfg(windows)]
+            Anchor::LocalAppData => dirs::data_local_dir(),
+            #[cfg(windows)]
+            Anchor::RoamingAppData => dirs::data_dir(),
+            #[cfg(unix)]
+            Anchor::Fixed(path) => Some(PathBuf::from(path)),
+        }
+    }
+
+    /// Register `anchor/rel` when the anchor resolves on this machine.
+    ///
+    /// The rule is recorded either way: the registry's rules describe what
+    /// this build of Bloatrail knows, not what this machine happens to have.
+    fn add(&mut self, anchor: Anchor, rel: &str, detection: Detection) {
+        self.rules.push(rule_identity(anchor, rel, &detection));
+
+        let Some(mut path) = self.resolve(anchor) else {
+            return;
         };
+        if !rel.is_empty() {
+            let rel = if rel.contains(USER) {
+                let Some(user) = &self.user else { return };
+                rel.replace(USER, user)
+            } else {
+                rel.to_string()
+            };
+            for part in rel.split('/') {
+                path.push(part);
+            }
+        }
         self.entries.push((path, detection));
     }
 
@@ -269,6 +383,8 @@ impl Builder {
             }
             lookup.insert(normalise_key(&path), KnownEntry { detection });
         }
+        let mut rules = self.rules;
+        rules.sort_unstable();
         KnownPaths {
             home: self.home.clone(),
             downloads: dirs::download_dir(),
@@ -277,6 +393,7 @@ impl Builder {
             lookup,
             trigger_names,
             protected: self.protected,
+            rules,
         }
     }
 
@@ -295,8 +412,8 @@ impl Builder {
 
         // ---- Rust -------------------------------------------------------
         self.add(
-            self.home_rel(".cargo/registry"),
-            "",
+            Anchor::Home,
+            ".cargo/registry",
             cache(
                 Category::PackageCache,
                 Technology::Rust,
@@ -311,8 +428,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".cargo/git"),
-            "",
+            Anchor::Home,
+            ".cargo/git",
             cache(
                 Category::PackageCache,
                 Technology::Rust,
@@ -323,8 +440,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".rustup/toolchains"),
-            "",
+            Anchor::Home,
+            ".rustup/toolchains",
             cache(
                 Category::Application,
                 Technology::Rust,
@@ -339,8 +456,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".rustup/downloads"),
-            "",
+            Anchor::Home,
+            ".rustup/downloads",
             cache(
                 Category::Cache,
                 Technology::Rust,
@@ -353,8 +470,8 @@ impl Builder {
 
         // ---- JavaScript -------------------------------------------------
         self.add(
-            self.home_rel(".npm/_cacache"),
-            "",
+            Anchor::Home,
+            ".npm/_cacache",
             cache(
                 Category::PackageCache,
                 Technology::Node,
@@ -366,8 +483,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".yarn/berry/cache"),
-            "",
+            Anchor::Home,
+            ".yarn/berry/cache",
             cache(
                 Category::PackageCache,
                 Technology::Node,
@@ -381,8 +498,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".cache/yarn"),
-            "",
+            Anchor::Home,
+            ".cache/yarn",
             cache(
                 Category::PackageCache,
                 Technology::Node,
@@ -392,10 +509,10 @@ impl Builder {
             .regenerated_by("yarn cache clean")
             .collapsed(),
         );
-        self.add(self.home_rel(".pnpm-store"), "", pnpm_store());
+        self.add(Anchor::Home, ".pnpm-store", pnpm_store());
         self.add(
-            self.home_rel(".bun/install/cache"),
-            "",
+            Anchor::Home,
+            ".bun/install/cache",
             cache(
                 Category::PackageCache,
                 Technology::Bun,
@@ -405,8 +522,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".deno"),
-            "",
+            Anchor::Home,
+            ".deno",
             cache(
                 Category::PackageCache,
                 Technology::Deno,
@@ -417,8 +534,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".node-gyp"),
-            "",
+            Anchor::Home,
+            ".node-gyp",
             cache(
                 Category::Cache,
                 Technology::Node,
@@ -428,8 +545,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".electron"),
-            "",
+            Anchor::Home,
+            ".electron",
             cache(
                 Category::Cache,
                 Technology::Node,
@@ -441,8 +558,8 @@ impl Builder {
 
         // ---- Python -----------------------------------------------------
         self.add(
-            self.home_rel(".cache/pip"),
-            "",
+            Anchor::Home,
+            ".cache/pip",
             cache(
                 Category::PackageCache,
                 Technology::Python,
@@ -453,8 +570,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".cache/uv"),
-            "",
+            Anchor::Home,
+            ".cache/uv",
             cache(
                 Category::PackageCache,
                 Technology::Python,
@@ -465,8 +582,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".cache/pypoetry"),
-            "",
+            Anchor::Home,
+            ".cache/pypoetry",
             cache(
                 Category::PackageCache,
                 Technology::Python,
@@ -482,8 +599,8 @@ impl Builder {
             "miniforge3/pkgs",
         ] {
             self.add(
-                self.home_rel(conda),
-                "",
+                Anchor::Home,
+                conda,
                 cache(
                     Category::PackageCache,
                     Technology::Python,
@@ -497,8 +614,8 @@ impl Builder {
 
         // ---- JVM / Android ----------------------------------------------
         self.add(
-            self.home_rel(".m2/repository"),
-            "",
+            Anchor::Home,
+            ".m2/repository",
             cache(
                 Category::PackageCache,
                 Technology::Maven,
@@ -512,8 +629,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".gradle/caches"),
-            "",
+            Anchor::Home,
+            ".gradle/caches",
             cache(
                 Category::PackageCache,
                 Technology::Gradle,
@@ -524,8 +641,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".gradle/daemon"),
-            "",
+            Anchor::Home,
+            ".gradle/daemon",
             cache(
                 Category::Log,
                 Technology::Gradle,
@@ -535,8 +652,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".android/avd"),
-            "",
+            Anchor::Home,
+            ".android/avd",
             cache(
                 Category::VirtualMachine,
                 Technology::Android,
@@ -548,8 +665,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".gradle/wrapper"),
-            "",
+            Anchor::Home,
+            ".gradle/wrapper",
             cache(
                 Category::PackageCache,
                 Technology::Gradle,
@@ -561,8 +678,8 @@ impl Builder {
 
         // ---- .NET / Go / others -----------------------------------------
         self.add(
-            self.home_rel(".nuget/packages"),
-            "",
+            Anchor::Home,
+            ".nuget/packages",
             cache(
                 Category::PackageCache,
                 Technology::DotNet,
@@ -573,8 +690,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel("go/pkg/mod"),
-            "",
+            Anchor::Home,
+            "go/pkg/mod",
             cache(
                 Category::PackageCache,
                 Technology::Go,
@@ -586,8 +703,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".cache/go-build"),
-            "",
+            Anchor::Home,
+            ".cache/go-build",
             cache(
                 Category::Cache,
                 Technology::Go,
@@ -598,8 +715,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".cargo/bin"),
-            "",
+            Anchor::Home,
+            ".cargo/bin",
             cache(
                 Category::Application,
                 Technology::Rust,
@@ -609,8 +726,8 @@ impl Builder {
             .with_evidence("These are tools you installed with `cargo install`."),
         );
         self.add(
-            self.home_rel(".cache/composer"),
-            "",
+            Anchor::Home,
+            ".cache/composer",
             cache(
                 Category::PackageCache,
                 Technology::Php,
@@ -620,8 +737,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".terraform.d/plugin-cache"),
-            "",
+            Anchor::Home,
+            ".terraform.d/plugin-cache",
             cache(
                 Category::PackageCache,
                 Technology::Terraform,
@@ -637,18 +754,7 @@ impl Builder {
             (".cache/puppeteer", "Puppeteer browser downloads"),
             (".cache/Cypress", "Cypress binary cache"),
         ] {
-            self.add(
-                self.home_rel(rel),
-                "",
-                cache(
-                    Category::Cache,
-                    Technology::Node,
-                    CleanupSafety::ProbablySafe,
-                    label,
-                )
-                .with_evidence("Re-downloaded automatically, but the download is large.")
-                .collapsed(),
-            );
+            self.add(Anchor::Home, rel, browser_download(label));
         }
 
         // ---- Machine learning model caches --------------------------------
@@ -658,8 +764,8 @@ impl Builder {
             (".cache/torch", "PyTorch model cache"),
         ] {
             self.add(
-                self.home_rel(rel),
-                "",
+                Anchor::Home,
+                rel,
                 cache(
                     Category::Cache,
                     Technology::Python,
@@ -675,10 +781,15 @@ impl Builder {
             );
         }
 
+        self.language_stores();
+        self.version_managers();
+        self.embedded_toolchains();
+        self.virtual_machines();
+
         // ---- Containers ---------------------------------------------------
         self.add(
-            self.home_rel(".docker"),
-            "",
+            Anchor::Home,
+            ".docker",
             cache(
                 Category::ContainerData,
                 Technology::Docker,
@@ -691,7 +802,7 @@ impl Builder {
 
         // ---- User content --------------------------------------------------
         self.add(
-            dirs::download_dir(),
+            Anchor::Downloads,
             "",
             Detection::new(
                 Category::Download,
@@ -708,7 +819,7 @@ impl Builder {
             .with_specificity(60),
         );
         self.add(
-            dirs::document_dir(),
+            Anchor::Documents,
             "",
             Detection::new(
                 Category::Document,
@@ -721,7 +832,7 @@ impl Builder {
             .with_specificity(60),
         );
         self.add(
-            dirs::video_dir(),
+            Anchor::Videos,
             "",
             Detection::new(
                 Category::Video,
@@ -733,7 +844,7 @@ impl Builder {
             .with_specificity(60),
         );
         self.add(
-            dirs::picture_dir(),
+            Anchor::Pictures,
             "",
             Detection::new(
                 Category::Image,
@@ -745,7 +856,7 @@ impl Builder {
             .with_specificity(60),
         );
         self.add(
-            dirs::audio_dir(),
+            Anchor::Music,
             "",
             Detection::new(
                 Category::Audio,
@@ -758,17 +869,543 @@ impl Builder {
         );
     }
 
+    /// Shared package stores of language ecosystems, in the same place on
+    /// every platform.
+    fn language_stores(&mut self) {
+        // ---- Dart ----------------------------------------------------------
+        self.add(Anchor::Home, ".pub-cache", pub_cache());
+
+        // ---- JVM: Ivy, sbt ---------------------------------------------------
+        self.add(
+            Anchor::Home,
+            ".ivy2/cache",
+            cache(
+                Category::PackageCache,
+                Technology::Jvm,
+                CleanupSafety::ProbablySafe,
+                "Ivy dependency cache",
+            )
+            .with_evidence(
+                "sbt and Ivy download anything missing again on the next build. Artifacts \
+                 published with `sbt publishLocal` live beside it in `~/.ivy2/local` and are \
+                 not part of this.",
+            )
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".sbt/boot",
+            cache(
+                Category::PackageCache,
+                Technology::Jvm,
+                CleanupSafety::ProbablySafe,
+                "sbt launcher downloads",
+            )
+            .with_evidence(
+                "The sbt and Scala versions the launcher fetched for your builds; it downloads \
+                 one again when a build asks for it. Global settings and plugins elsewhere in \
+                 `~/.sbt` are not part of this.",
+            )
+            .collapsed(),
+        );
+
+        // ---- Haskell: Stack ------------------------------------------------
+        self.add(
+            Anchor::Home,
+            ".stack/pantry",
+            cache(
+                Category::PackageCache,
+                Technology::Haskell,
+                CleanupSafety::ProbablySafe,
+                "Stack package index and downloads",
+            )
+            .with_evidence(
+                "Stack downloads the Hackage index and package sources again on the next build \
+                 that needs them; the index alone is a sizeable download.",
+            )
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".stack/snapshots",
+            cache(
+                Category::BuildArtifact,
+                Technology::Haskell,
+                CleanupSafety::ProbablySafe,
+                "Stack snapshot builds",
+            )
+            .with_evidence(
+                "Libraries compiled once per resolver snapshot and shared by every project on \
+                 it. Stack rebuilds them on the next build, which can take a long time.",
+            )
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".stack/programs",
+            cache(
+                Category::Application,
+                Technology::Haskell,
+                CleanupSafety::Review,
+                "GHC versions installed by Stack",
+            )
+            .with_evidence(
+                "Stack installs a missing compiler again when a project's resolver needs it, but \
+                 each one is a large download. Delete the versions you no longer use rather \
+                 than all of them.",
+            )
+            .collapsed(),
+        );
+
+        // ---- C/C++: Conan --------------------------------------------------
+        for (rel, label) in [
+            (".conan2/p", "Conan package cache"),
+            (".conan/data", "Conan 1 package cache"),
+        ] {
+            self.add(
+                Anchor::Home,
+                rel,
+                cache(
+                    Category::PackageCache,
+                    Technology::Cpp,
+                    CleanupSafety::ProbablySafe,
+                    label,
+                )
+                .with_evidence(
+                    "Packages downloaded from a remote are fetched again, but packages built \
+                     here from source (`--build`, `conan create`) have to be built again, which \
+                     for large libraries can take hours, and ones you never uploaded cannot be \
+                     downloaded again.",
+                )
+                .collapsed(),
+            );
+        }
+
+        // ---- Elixir, OCaml -----------------------------------------------------
+        self.add(
+            Anchor::Home,
+            ".hex/packages",
+            cache(
+                Category::PackageCache,
+                Technology::Elixir,
+                CleanupSafety::Safe,
+                "Hex package cache",
+            )
+            .with_evidence(
+                "Package archives Hex keeps after fetching; Mix downloads any it needs again.",
+            )
+            .regenerated_by("mix deps.get")
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".opam/download-cache",
+            cache(
+                Category::PackageCache,
+                Technology::Ocaml,
+                CleanupSafety::Safe,
+                "opam download cache",
+            )
+            .with_evidence(
+                "Source archives opam keeps after installing a package; it downloads them again \
+                 when it needs them.",
+            )
+            .regenerated_by("opam clean --download-cache")
+            .collapsed(),
+        );
+
+        // ---- Julia -----------------------------------------------------------
+        self.add(
+            Anchor::Home,
+            ".julia/packages",
+            cache(
+                Category::PackageCache,
+                Technology::Julia,
+                CleanupSafety::ProbablySafe,
+                "Julia package sources",
+            )
+            .with_evidence(
+                "Pkg downloads the versions an environment needs again on `Pkg.instantiate()`, \
+                 but until then `using` fails in every environment that relied on them. \
+                 Packages you are developing live in `~/.julia/dev` and are not part of this.",
+            )
+            .with_evidence("`Pkg.gc()` removes only the versions no environment uses any more.")
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".julia/artifacts",
+            cache(
+                Category::PackageCache,
+                Technology::Julia,
+                CleanupSafety::ProbablySafe,
+                "Julia binary artifacts",
+            )
+            .with_evidence(
+                "Prebuilt libraries and data that packages download on demand; Pkg fetches them \
+                 again for an environment on `Pkg.instantiate()`.",
+            )
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".julia/compiled",
+            cache(
+                Category::Cache,
+                Technology::Julia,
+                CleanupSafety::Safe,
+                "Julia precompilation cache",
+            )
+            .with_evidence(
+                "Julia precompiles packages again the next time they are loaded, which can take \
+                 minutes for a large environment.",
+            )
+            .collapsed(),
+        );
+
+        // ---- Hook runners --------------------------------------------------
+        self.add(
+            Anchor::Home,
+            ".cache/pre-commit",
+            cache(
+                Category::Cache,
+                Technology::Python,
+                CleanupSafety::Safe,
+                "pre-commit hook environments",
+            )
+            .with_evidence("pre-commit clones and installs each hook again on its next run.")
+            .regenerated_by("pre-commit clean")
+            .collapsed(),
+        );
+    }
+
+    /// Toolchain and runtime versions installed per user by a version manager.
+    ///
+    /// The versions themselves are choices — a default the shell runs, a pin a
+    /// project needs — so they are `Review` and removed through the manager.
+    /// Only the managers' download caches are offered outright.
+    fn version_managers(&mut self) {
+        self.add(
+            Anchor::Home,
+            ".nvm/versions",
+            cache(
+                Category::Application,
+                Technology::Node,
+                CleanupSafety::Review,
+                "Node.js versions installed with nvm",
+            )
+            .with_evidence(
+                "Each version carries the global npm packages installed into it, and a shell \
+                 that uses it stops working when it is gone.",
+            )
+            .with_evidence("Remove the versions you no longer use with `nvm uninstall <version>`.")
+            .with_reclaim(Reclaim::External)
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".nvm/.cache",
+            cache(
+                Category::Cache,
+                Technology::Node,
+                CleanupSafety::Safe,
+                "nvm download cache",
+            )
+            .with_evidence(
+                "Node.js archives nvm keeps after installing; installed versions do not need \
+                 them.",
+            )
+            .regenerated_by("nvm cache clear")
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".pyenv/versions",
+            cache(
+                Category::Application,
+                Technology::Python,
+                CleanupSafety::Review,
+                "Python versions installed with pyenv",
+            )
+            .with_evidence(
+                "pyenv builds each version from source, and pyenv-virtualenv keeps its virtual \
+                 environments here too, so an entry can be an environment holding packages you \
+                 installed by hand.",
+            )
+            .with_evidence("Remove the ones you no longer use with `pyenv uninstall <version>`.")
+            .with_reclaim(Reclaim::External)
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".sdkman/candidates",
+            cache(
+                Category::Application,
+                Technology::Jvm,
+                CleanupSafety::Review,
+                "SDKs installed with SDKMAN!",
+            )
+            .with_evidence(
+                "JDKs and build tools you chose to install, including the defaults your shell \
+                 runs. Remove a version with `sdk uninstall <candidate> <version>`.",
+            )
+            .with_reclaim(Reclaim::External)
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".sdkman/archives",
+            cache(
+                Category::PackageCache,
+                Technology::Jvm,
+                CleanupSafety::Safe,
+                "SDKMAN! download archives",
+            )
+            .with_evidence(
+                "Archives SDKMAN! keeps after installing; installed SDKs do not need them.",
+            )
+            .regenerated_by("sdk flush archives")
+            .collapsed(),
+        );
+        self.add(Anchor::Home, ".volta/tools/image", volta_toolchains());
+        self.add(Anchor::Home, ".volta/tools/inventory", volta_downloads());
+        self.add(
+            Anchor::Home,
+            ".elan/toolchains",
+            cache(
+                Category::Application,
+                Technology::Lean,
+                CleanupSafety::Review,
+                "Lean toolchains installed by elan",
+            )
+            .with_evidence(
+                "A project pins its toolchain in `lean-toolchain` and elan downloads it again \
+                 when it is missing, but each is a large download. Remove the ones you no \
+                 longer use with `elan toolchain uninstall <name>`.",
+            )
+            .with_reclaim(Reclaim::External)
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".ghcup/ghc",
+            cache(
+                Category::Application,
+                Technology::Haskell,
+                CleanupSafety::Review,
+                "GHC versions installed by GHCup",
+            )
+            .with_evidence(
+                "Compilers you chose to install, including the one `ghc` runs by default. \
+                 Remove a version with `ghcup rm ghc <version>`.",
+            )
+            .with_reclaim(Reclaim::External)
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".ghcup/cache",
+            cache(
+                Category::PackageCache,
+                Technology::Haskell,
+                CleanupSafety::Safe,
+                "GHCup download cache",
+            )
+            .with_evidence(
+                "Release archives GHCup keeps after installing; installed tools do not need them.",
+            )
+            .regenerated_by("ghcup gc --cache")
+            .collapsed(),
+        );
+    }
+
+    /// Embedded toolchains, which download compilers and SDKs per board.
+    fn embedded_toolchains(&mut self) {
+        for (rel, label) in [
+            (
+                ".platformio/packages",
+                "PlatformIO toolchains and frameworks",
+            ),
+            (".platformio/platforms", "PlatformIO development platforms"),
+        ] {
+            self.add(
+                Anchor::Home,
+                rel,
+                cache(
+                    Category::PackageCache,
+                    Technology::PlatformIo,
+                    CleanupSafety::ProbablySafe,
+                    label,
+                )
+                .with_evidence(
+                    "PlatformIO installs what a project's `platformio.ini` asks for again on its \
+                     next build, but toolchains and frameworks are large downloads.",
+                )
+                .collapsed(),
+            );
+        }
+        self.add(
+            Anchor::Home,
+            ".platformio/.cache",
+            cache(
+                Category::Cache,
+                Technology::PlatformIo,
+                CleanupSafety::Safe,
+                "PlatformIO download cache",
+            )
+            .with_evidence("Downloads and registry responses PlatformIO fetches again when needed.")
+            .collapsed(),
+        );
+
+        self.add(
+            Anchor::Home,
+            ".espressif/dist",
+            cache(
+                Category::PackageCache,
+                Technology::EspIdf,
+                CleanupSafety::Safe,
+                "ESP-IDF tool downloads",
+            )
+            .with_evidence(
+                "Archives ESP-IDF's tool installer keeps after unpacking; installed tools do \
+                 not need them.",
+            )
+            .collapsed(),
+        );
+        for (rel, category, label) in [
+            (
+                ".espressif/tools",
+                Category::PackageCache,
+                "ESP-IDF toolchains",
+            ),
+            (
+                ".espressif/python_env",
+                Category::Dependency,
+                "ESP-IDF Python environments",
+            ),
+        ] {
+            self.add(
+                Anchor::Home,
+                rel,
+                cache(
+                    category,
+                    Technology::EspIdf,
+                    CleanupSafety::ProbablySafe,
+                    label,
+                )
+                .with_evidence(
+                    "ESP-IDF's install script (`install.sh` or `install.bat` in the ESP-IDF \
+                     directory) puts these here and recreates them, but they are large \
+                     downloads, and ESP-IDF will not build until it has run again.",
+                )
+                .collapsed(),
+            );
+        }
+    }
+
+    /// Virtual machines and the images they are made from.
+    ///
+    /// `.lima`, `.colima` and `.minikube` are not traversed by default: they
+    /// hold SSH keys and cluster certificates beside the disks, so their rules
+    /// apply with `--include-hidden` or when one is scanned directly. Machine
+    /// disks are `Review` and reclaimed through the tool that owns them:
+    /// deleting the files destroys whatever lives inside the VM.
+    fn virtual_machines(&mut self) {
+        self.add(
+            Anchor::Home,
+            ".vagrant.d/boxes",
+            cache(
+                Category::VirtualMachine,
+                Technology::Vagrant,
+                CleanupSafety::Review,
+                "Vagrant base boxes",
+            )
+            .with_evidence(
+                "Base images that `vagrant up` creates machines from. Vagrant downloads a \
+                 missing box again when a Vagrantfile needs it, provided its host still offers \
+                 that version.",
+            )
+            .with_evidence(
+                "Remove old versions with `vagrant box prune`, or one box with \
+                 `vagrant box remove <name>`.",
+            )
+            .with_reclaim(Reclaim::External)
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".minikube/cache",
+            cache(
+                Category::Cache,
+                Technology::Kubernetes,
+                CleanupSafety::ProbablySafe,
+                "minikube download cache",
+            )
+            .with_evidence(
+                "VM images, preloaded container images and Kubernetes binaries; \
+                 `minikube start` downloads what it needs again.",
+            )
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".minikube/machines",
+            cache(
+                Category::VirtualMachine,
+                Technology::Kubernetes,
+                CleanupSafety::Review,
+                "minikube cluster machines",
+            )
+            .with_evidence(
+                "Clusters run with a VM driver keep their disks here, holding every workload, \
+                 image and volume inside them. Remove a cluster with `minikube delete`.",
+            )
+            .with_reclaim(Reclaim::External)
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".lima",
+            cache(
+                Category::VirtualMachine,
+                Technology::Lima,
+                CleanupSafety::Review,
+                "Lima virtual machines",
+            )
+            .with_evidence(
+                "Each instance's disk holds everything installed and stored inside that VM. \
+                 Remove an instance with `limactl delete <name>`.",
+            )
+            .with_reclaim(Reclaim::External)
+            .collapsed(),
+        );
+        self.add(
+            Anchor::Home,
+            ".colima",
+            cache(
+                Category::VirtualMachine,
+                Technology::Docker,
+                CleanupSafety::Review,
+                "Colima virtual machines",
+            )
+            .with_evidence(
+                "The VM disk holds every image, container and volume of the container runtime \
+                 inside it. Free space inside it with `docker system prune`, or remove a \
+                 profile with `colima delete`.",
+            )
+            .with_reclaim(Reclaim::External)
+            .collapsed(),
+        );
+    }
+
     #[cfg(windows)]
     fn windows(&mut self) {
-        let local = dirs::data_local_dir();
-        let roaming = dirs::data_dir();
-
         self.protect(Some(PathBuf::from(r"C:\Windows")));
         self.protect(Some(PathBuf::from(r"C:\Program Files")));
         self.protect(Some(PathBuf::from(r"C:\Program Files (x86)")));
 
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "Temp",
             cache(
                 Category::Temporary,
@@ -783,7 +1420,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "npm-cache",
             cache(
                 Category::PackageCache,
@@ -794,9 +1431,9 @@ impl Builder {
             .regenerated_by("npm cache clean --force")
             .collapsed(),
         );
-        self.add(local.clone(), "pnpm/store", pnpm_store());
+        self.add(Anchor::LocalAppData, "pnpm/store", pnpm_store());
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "Yarn/Cache",
             cache(
                 Category::PackageCache,
@@ -807,7 +1444,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "pip/Cache",
             cache(
                 Category::PackageCache,
@@ -819,7 +1456,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "uv/cache",
             cache(
                 Category::PackageCache,
@@ -830,7 +1467,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "ms-playwright",
             cache(
                 Category::Cache,
@@ -841,7 +1478,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "Docker/wsl",
             cache(
                 Category::ContainerData,
@@ -858,7 +1495,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "Docker",
             cache(
                 Category::ContainerData,
@@ -869,7 +1506,7 @@ impl Builder {
             .with_reclaim(Reclaim::External),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "CrashDumps",
             cache(
                 Category::Temporary,
@@ -880,7 +1517,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "JetBrains",
             cache(
                 Category::Cache,
@@ -892,7 +1529,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "Microsoft/VisualStudio",
             cache(
                 Category::Cache,
@@ -903,7 +1540,7 @@ impl Builder {
             .with_evidence("Also contains per-user settings, not only regenerable caches."),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "NuGet/v3-cache",
             cache(
                 Category::PackageCache,
@@ -915,7 +1552,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "Microsoft/Windows/INetCache",
             cache(
                 Category::Cache,
@@ -926,7 +1563,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            roaming.clone(),
+            Anchor::RoamingAppData,
             "Code/CachedData",
             cache(
                 Category::Cache,
@@ -937,7 +1574,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            roaming,
+            Anchor::RoamingAppData,
             "Code/Cache",
             cache(
                 Category::Cache,
@@ -948,7 +1585,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local,
+            Anchor::LocalAppData,
             "Temp/chocolatey",
             cache(
                 Category::PackageCache,
@@ -957,6 +1594,35 @@ impl Builder {
                 "Chocolatey download cache",
             )
             .collapsed(),
+        );
+
+        // The Windows homes of stores that live under `~` elsewhere.
+        self.add(Anchor::LocalAppData, "Pub/Cache", pub_cache());
+        self.add(Anchor::LocalAppData, "Coursier/cache", coursier_cache());
+        self.add(
+            Anchor::LocalAppData,
+            "Volta/tools/image",
+            volta_toolchains(),
+        );
+        self.add(
+            Anchor::LocalAppData,
+            "Volta/tools/inventory",
+            volta_downloads(),
+        );
+        self.add(Anchor::LocalAppData, "Arduino15/packages", arduino_cores());
+        self.add(
+            Anchor::LocalAppData,
+            "Arduino15/staging",
+            arduino_downloads(),
+        );
+        self.add(Anchor::Home, "_bazel_{user}", bazel_output_root());
+        self.add(Anchor::LocalAppData, "bazelisk", bazelisk_cache());
+        self.add(Anchor::LocalAppData, "electron/Cache", electron_cache());
+        self.add(Anchor::LocalAppData, "node-gyp/Cache", node_gyp_cache());
+        self.add(
+            Anchor::LocalAppData,
+            "Cypress/Cache",
+            browser_download("Cypress binary cache"),
         );
     }
 
@@ -967,8 +1633,8 @@ impl Builder {
         self.protect(Some(PathBuf::from("/Applications")));
 
         self.add(
-            self.home_rel("Library/Developer/Xcode/DerivedData"),
-            "",
+            Anchor::Home,
+            "Library/Developer/Xcode/DerivedData",
             cache(
                 Category::BuildArtifact,
                 Technology::Xcode,
@@ -979,8 +1645,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel("Library/Developer/Xcode/Archives"),
-            "",
+            Anchor::Home,
+            "Library/Developer/Xcode/Archives",
             cache(
                 Category::Archive,
                 Technology::Xcode,
@@ -992,8 +1658,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel("Library/Developer/Xcode/iOS DeviceSupport"),
-            "",
+            Anchor::Home,
+            "Library/Developer/Xcode/iOS DeviceSupport",
             cache(
                 Category::Cache,
                 Technology::Xcode,
@@ -1004,8 +1670,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel("Library/Developer/CoreSimulator/Devices"),
-            "",
+            Anchor::Home,
+            "Library/Developer/CoreSimulator/Devices",
             cache(
                 Category::VirtualMachine,
                 Technology::Xcode,
@@ -1018,8 +1684,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel("Library/Caches/Homebrew"),
-            "",
+            Anchor::Home,
+            "Library/Caches/Homebrew",
             cache(
                 Category::PackageCache,
                 Technology::Homebrew,
@@ -1030,8 +1696,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel("Library/Caches/JetBrains"),
-            "",
+            Anchor::Home,
+            "Library/Caches/JetBrains",
             cache(
                 Category::Cache,
                 Technology::JetBrains,
@@ -1041,8 +1707,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel("Library/Caches"),
-            "",
+            Anchor::Home,
+            "Library/Caches",
             cache(
                 Category::Cache,
                 Technology::System,
@@ -1055,8 +1721,8 @@ impl Builder {
             ),
         );
         self.add(
-            self.home_rel("Library/Containers/com.docker.docker/Data"),
-            "",
+            Anchor::Home,
+            "Library/Containers/com.docker.docker/Data",
             cache(
                 Category::ContainerData,
                 Technology::Docker,
@@ -1068,8 +1734,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".Trash"),
-            "",
+            Anchor::Home,
+            ".Trash",
             cache(
                 Category::Temporary,
                 Technology::System,
@@ -1079,6 +1745,33 @@ impl Builder {
             .with_evidence("Emptying the Trash is irreversible; Bloatrail leaves it to Finder.")
             .with_reclaim(Reclaim::External)
             .collapsed(),
+        );
+
+        // The macOS homes of stores that live under `~/.cache` on Linux.
+        self.add(Anchor::Home, "Library/Caches/Coursier", coursier_cache());
+        self.add(Anchor::Home, "Library/Arduino15/packages", arduino_cores());
+        self.add(
+            Anchor::Home,
+            "Library/Arduino15/staging",
+            arduino_downloads(),
+        );
+        self.add(
+            Anchor::Fixed("/private/var/tmp"),
+            "_bazel_{user}",
+            bazel_output_root(),
+        );
+        self.add(Anchor::Home, "Library/Caches/bazelisk", bazelisk_cache());
+        self.add(Anchor::Home, "Library/Caches/electron", electron_cache());
+        self.add(Anchor::Home, "Library/Caches/node-gyp", node_gyp_cache());
+        self.add(
+            Anchor::Home,
+            "Library/Caches/ms-playwright",
+            browser_download("Playwright browser downloads"),
+        );
+        self.add(
+            Anchor::Home,
+            "Library/Caches/Cypress",
+            browser_download("Cypress binary cache"),
         );
     }
 
@@ -1091,8 +1784,8 @@ impl Builder {
         self.protect(Some(PathBuf::from("/nix/store")));
 
         self.add(
-            self.home_rel(".cache"),
-            "",
+            Anchor::Home,
+            ".cache",
             cache(
                 Category::Cache,
                 Technology::System,
@@ -1102,8 +1795,8 @@ impl Builder {
             .with_evidence("Applications regenerate their caches, though some do so slowly."),
         );
         self.add(
-            self.home_rel(".local/share/Trash"),
-            "",
+            Anchor::Home,
+            ".local/share/Trash",
             cache(
                 Category::Temporary,
                 Technology::System,
@@ -1114,8 +1807,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".local/share/containers"),
-            "",
+            Anchor::Home,
+            ".local/share/containers",
             cache(
                 Category::ContainerData,
                 Technology::Docker,
@@ -1127,7 +1820,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            Some(PathBuf::from("/var/lib/docker")),
+            Anchor::Fixed("/var/lib/docker"),
             "",
             cache(
                 Category::ContainerData,
@@ -1141,7 +1834,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            Some(PathBuf::from("/var/log")),
+            Anchor::Fixed("/var/log"),
             "",
             cache(
                 Category::Log,
@@ -1153,8 +1846,8 @@ impl Builder {
             .with_reclaim(Reclaim::External),
         );
         self.add(
-            self.home_rel(".var/app"),
-            "",
+            Anchor::Home,
+            ".var/app",
             cache(
                 Category::Application,
                 Technology::System,
@@ -1164,8 +1857,8 @@ impl Builder {
             .with_reclaim(Reclaim::External),
         );
         self.add(
-            self.home_rel("snap"),
-            "",
+            Anchor::Home,
+            "snap",
             cache(
                 Category::Application,
                 Technology::System,
@@ -1174,7 +1867,39 @@ impl Builder {
             )
             .with_reclaim(Reclaim::External),
         );
+
+        // XDG cache homes of stores that live elsewhere on macOS and Windows.
+        self.add(Anchor::Home, ".cache/coursier", coursier_cache());
+        self.add(Anchor::Home, ".arduino15/packages", arduino_cores());
+        self.add(Anchor::Home, ".arduino15/staging", arduino_downloads());
+        self.add(Anchor::Home, ".cache/bazel", bazel_output_root());
+        self.add(Anchor::Home, ".cache/bazelisk", bazelisk_cache());
+        self.add(Anchor::Home, ".cache/electron", electron_cache());
+        self.add(Anchor::Home, ".cache/node-gyp", node_gyp_cache());
     }
+}
+
+/// One registration, written so that only a change in what Bloatrail knows can
+/// change it: the anchor, the path under it as written, and what the rule does
+/// to the bytes beneath — their category, and whether the subtree is collapsed
+/// (which decides the directories a snapshot can list) or merely claimed.
+/// Wording, evidence and cleanup advice are left out; they change what a report
+/// says, not what a scan counts.
+fn rule_identity(anchor: Anchor, rel: &str, detection: &Detection) -> String {
+    let scope = if detection.collapse {
+        "collapse"
+    } else if detection.claims_contents {
+        "claim"
+    } else {
+        "name"
+    };
+    let tag = anchor.tag();
+    let location = if rel.is_empty() {
+        tag.to_string()
+    } else {
+        format!("{tag}/{rel}")
+    };
+    format!("{location} {} {scope}", detection.category.id())
 }
 
 /// Shorthand for a known-location detection.
@@ -1202,6 +1927,175 @@ fn pnpm_store() -> Detection {
          leaves existing installs with broken links until you run `pnpm install` again.",
     )
     .regenerated_by("pnpm store prune")
+    .collapsed()
+}
+
+// The stores below live in a different place on each platform but need the
+// same classification and the same words wherever they are found.
+
+fn pub_cache() -> Detection {
+    cache(
+        Category::PackageCache,
+        Technology::Dart,
+        CleanupSafety::ProbablySafe,
+        "Dart pub package cache",
+    )
+    .with_evidence(
+        "Dart and Flutter projects resolve their packages straight out of this cache, so each \
+         needs `dart pub get` (or `flutter pub get`) again before it builds.",
+    )
+    .with_evidence(
+        "Tools installed with `dart pub global activate` live here too and have to be \
+         activated again.",
+    )
+    .regenerated_by("dart pub get")
+    .collapsed()
+}
+
+fn coursier_cache() -> Detection {
+    cache(
+        Category::PackageCache,
+        Technology::Jvm,
+        CleanupSafety::ProbablySafe,
+        "Coursier artifact cache",
+    )
+    .with_evidence(
+        "sbt, Mill, Scala CLI and Metals fetch dependencies through Coursier, which downloads \
+         anything missing again; a large cache takes a while to rebuild.",
+    )
+    .with_evidence(
+        "JVMs Coursier manages (`cs java`) are unpacked here as well, so a `JAVA_HOME` pointing \
+         at one stops working until Coursier fetches it again.",
+    )
+    .collapsed()
+}
+
+fn volta_toolchains() -> Detection {
+    cache(
+        Category::Application,
+        Technology::Node,
+        CleanupSafety::Review,
+        "Node.js toolchains installed by Volta",
+    )
+    .with_evidence(
+        "The Node.js, npm and Yarn versions Volta runs for your projects and as your default. \
+         Volta fetches a version a project pins again when it is missing, but a default you \
+         chose with `volta install` has to be installed again.",
+    )
+    .collapsed()
+}
+
+fn volta_downloads() -> Detection {
+    cache(
+        Category::PackageCache,
+        Technology::Node,
+        CleanupSafety::Safe,
+        "Volta download cache",
+    )
+    .with_evidence(
+        "Archives of the tool versions Volta has downloaded; installed versions do not need \
+         them.",
+    )
+    .collapsed()
+}
+
+fn arduino_cores() -> Detection {
+    cache(
+        Category::Application,
+        Technology::Arduino,
+        CleanupSafety::Review,
+        "Arduino board cores and toolchains",
+    )
+    .with_evidence(
+        "Installed through the Boards Manager; sketches for those boards will not build until \
+         the cores are installed again.",
+    )
+    .with_evidence(
+        "Remove a core from the Boards Manager, or with `arduino-cli core uninstall <core>`.",
+    )
+    .with_reclaim(Reclaim::External)
+    .collapsed()
+}
+
+fn arduino_downloads() -> Detection {
+    cache(
+        Category::PackageCache,
+        Technology::Arduino,
+        CleanupSafety::Safe,
+        "Arduino download cache",
+    )
+    .with_evidence(
+        "Archives the Boards and Library Managers keep after installing; installed cores and \
+         libraries do not need them.",
+    )
+    .regenerated_by("arduino-cli cache clean")
+    .collapsed()
+}
+
+fn bazel_output_root() -> Detection {
+    cache(
+        Category::BuildArtifact,
+        Technology::Bazel,
+        CleanupSafety::Review,
+        "Bazel output root",
+    )
+    .with_evidence(
+        "Every workspace's build outputs and fetched external repositories, Bazel's repository \
+         cache and its own unpacked install. Bazel rebuilds and re-fetches all of it, which can \
+         take hours for a large workspace.",
+    )
+    .with_evidence(
+        "Run `bazel clean --expunge` in a workspace rather than deleting files here: a running \
+         Bazel server keeps this directory open, and Bazel marks its outputs read-only.",
+    )
+    .with_reclaim(Reclaim::External)
+    .collapsed()
+}
+
+fn bazelisk_cache() -> Detection {
+    cache(
+        Category::PackageCache,
+        Technology::Bazel,
+        CleanupSafety::Safe,
+        "Bazelisk download cache",
+    )
+    .with_evidence(
+        "Bazel releases Bazelisk downloaded; it fetches the version a workspace pins again on \
+         its next run.",
+    )
+    .collapsed()
+}
+
+fn electron_cache() -> Detection {
+    cache(
+        Category::Cache,
+        Technology::Node,
+        CleanupSafety::ProbablySafe,
+        "Electron binary cache",
+    )
+    .with_evidence("Re-downloaded by the next install that needs it, but the download is large.")
+    .collapsed()
+}
+
+fn node_gyp_cache() -> Detection {
+    cache(
+        Category::Cache,
+        Technology::Node,
+        CleanupSafety::Safe,
+        "node-gyp header cache",
+    )
+    .with_evidence("Node.js headers node-gyp downloads again on the next native build.")
+    .collapsed()
+}
+
+fn browser_download(label: &'static str) -> Detection {
+    cache(
+        Category::Cache,
+        Technology::Node,
+        CleanupSafety::ProbablySafe,
+        label,
+    )
+    .with_evidence("Re-downloaded automatically, but the download is large.")
     .collapsed()
 }
 
@@ -1250,6 +2144,225 @@ mod tests {
         if let Some(home) = known.home.clone() {
             assert!(known.is_protected(&home), "home must be protected");
             assert_eq!(known.display(&home), "~");
+        }
+    }
+
+    #[test]
+    fn rules_name_anchors_never_resolved_paths() {
+        let here = KnownPaths::build(Some(PathBuf::from("/home/alice-unique")));
+        let there = KnownPaths::build(Some(PathBuf::from("/srv/people/bob-unique")));
+        let nowhere = KnownPaths::build(None);
+
+        assert!(!here.rules().is_empty());
+        assert_eq!(
+            here.rules(),
+            there.rules(),
+            "where home is must not change the rules"
+        );
+        assert_eq!(
+            here.rules(),
+            nowhere.rules(),
+            "a rule counts whether or not it resolves on this machine"
+        );
+        assert!(
+            here.rules()
+                .iter()
+                .all(|rule| !rule.contains("alice-unique")),
+            "no resolved path may appear in a rule"
+        );
+        assert!(here.rules().windows(2).all(|pair| pair[0] <= pair[1]));
+        assert!(
+            here.rules()
+                .iter()
+                .any(|rule| rule == "~/.cargo/registry package_cache collapse"),
+            "a rule names its anchor, its path, its category and its scope"
+        );
+    }
+
+    /// The test home every registry below is built around.
+    fn test_home() -> PathBuf {
+        PathBuf::from(if cfg!(windows) {
+            r"C:\Users\tester"
+        } else {
+            "/home/tester"
+        })
+    }
+
+    /// How `path`, made of `/`-separated parts under `base`, is classified.
+    fn safety_at(known: &KnownPaths, base: &Path, rel: &str) -> CleanupSafety {
+        let path = rel
+            .split('/')
+            .fold(base.to_path_buf(), |p, part| p.join(part));
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("a named path")
+            .to_lowercase();
+        known
+            .detect(&path, &name)
+            .unwrap_or_else(|| panic!("`{}` is not registered", path.display()))
+            .cleanup
+    }
+
+    #[test]
+    fn shared_developer_stores_are_registered_with_honest_safety() {
+        let home = test_home();
+        let known = KnownPaths::build(Some(home.clone()));
+        let expect = |rel: &str, safety: CleanupSafety| {
+            assert_eq!(safety_at(&known, &home, rel), safety, "`~/{rel}`");
+        };
+
+        // Caches the owning tool refills on its own, holding nothing else.
+        for rel in [
+            ".cache/pre-commit",
+            ".hex/packages",
+            ".opam/download-cache",
+            ".julia/compiled",
+            ".nvm/.cache",
+            ".sdkman/archives",
+            ".ghcup/cache",
+            ".volta/tools/inventory",
+            ".espressif/dist",
+            ".platformio/.cache",
+        ] {
+            expect(rel, CleanupSafety::Safe);
+        }
+
+        // Fetched or built again on demand, at a real cost in time or
+        // bandwidth, or with something to redo before projects build.
+        for rel in [
+            ".pub-cache",
+            ".ivy2/cache",
+            ".sbt/boot",
+            ".stack/pantry",
+            ".stack/snapshots",
+            ".conan2/p",
+            ".conan/data",
+            ".julia/packages",
+            ".julia/artifacts",
+            ".platformio/packages",
+            ".platformio/platforms",
+            ".espressif/tools",
+            ".espressif/python_env",
+            ".minikube/cache",
+        ] {
+            expect(rel, CleanupSafety::ProbablySafe);
+        }
+
+        // Choices and state: toolchain versions someone installed, virtual
+        // machines and the images they come from, downloaded models.
+        for rel in [
+            ".nvm/versions",
+            ".pyenv/versions",
+            ".sdkman/candidates",
+            ".volta/tools/image",
+            ".elan/toolchains",
+            ".ghcup/ghc",
+            ".stack/programs",
+            ".vagrant.d/boxes",
+            ".minikube/machines",
+            ".lima",
+            ".colima",
+            ".android/avd",
+            ".ollama/models",
+            ".cache/huggingface",
+            ".cache/torch",
+        ] {
+            expect(rel, CleanupSafety::Review);
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn linux_cache_homes_of_shared_stores_are_registered() {
+        let home = test_home();
+        let known = KnownPaths::build(Some(home.clone()));
+        for (rel, safety) in [
+            (".cache/coursier", CleanupSafety::ProbablySafe),
+            (".cache/bazel", CleanupSafety::Review),
+            (".cache/bazelisk", CleanupSafety::Safe),
+            (".cache/electron", CleanupSafety::ProbablySafe),
+            (".cache/node-gyp", CleanupSafety::Safe),
+            (".cache/ms-playwright", CleanupSafety::ProbablySafe),
+            (".cache/Cypress", CleanupSafety::ProbablySafe),
+            (".arduino15/packages", CleanupSafety::Review),
+            (".arduino15/staging", CleanupSafety::Safe),
+        ] {
+            assert_eq!(safety_at(&known, &home, rel), safety, "`~/{rel}`");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_cache_homes_of_shared_stores_are_registered() {
+        let home = test_home();
+        let known = KnownPaths::build(Some(home.clone()));
+        for (rel, safety) in [
+            ("Library/Caches/Coursier", CleanupSafety::ProbablySafe),
+            ("Library/Caches/bazelisk", CleanupSafety::Safe),
+            ("Library/Caches/electron", CleanupSafety::ProbablySafe),
+            ("Library/Caches/node-gyp", CleanupSafety::Safe),
+            ("Library/Caches/ms-playwright", CleanupSafety::ProbablySafe),
+            ("Library/Caches/Cypress", CleanupSafety::ProbablySafe),
+            ("Library/Arduino15/packages", CleanupSafety::Review),
+            ("Library/Arduino15/staging", CleanupSafety::Safe),
+        ] {
+            assert_eq!(safety_at(&known, &home, rel), safety, "`~/{rel}`");
+        }
+        if let Some(user) = login_name() {
+            let root = format!("_bazel_{user}");
+            assert_eq!(
+                safety_at(&known, Path::new("/private/var/tmp"), &root),
+                CleanupSafety::Review
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_homes_of_shared_stores_are_registered() {
+        let home = test_home();
+        let known = KnownPaths::build(Some(home.clone()));
+        let local = dirs::data_local_dir().expect("%LOCALAPPDATA%");
+        for (rel, safety) in [
+            ("Pub/Cache", CleanupSafety::ProbablySafe),
+            ("Coursier/cache", CleanupSafety::ProbablySafe),
+            ("Volta/tools/image", CleanupSafety::Review),
+            ("Volta/tools/inventory", CleanupSafety::Safe),
+            ("Arduino15/packages", CleanupSafety::Review),
+            ("Arduino15/staging", CleanupSafety::Safe),
+            ("bazelisk", CleanupSafety::Safe),
+            ("electron/Cache", CleanupSafety::ProbablySafe),
+            ("node-gyp/Cache", CleanupSafety::Safe),
+            ("Cypress/Cache", CleanupSafety::ProbablySafe),
+        ] {
+            assert_eq!(safety_at(&known, &local, rel), safety, "`{rel}`");
+        }
+        if let Some(user) = login_name() {
+            let root = format!("_bazel_{user}");
+            assert_eq!(safety_at(&known, &home, &root), CleanupSafety::Review);
+        }
+    }
+
+    #[test]
+    fn machines_and_installed_software_are_never_offered_outright() {
+        // A VM disk, a container store or an installed toolchain is state
+        // someone chose. Whatever else changes in the registry, none of them
+        // may become something `clean` selects without a human decision.
+        let known = KnownPaths::build(Some(test_home()));
+        for (key, entry) in &known.lookup {
+            let detection = &entry.detection;
+            if matches!(
+                detection.category,
+                Category::VirtualMachine | Category::ContainerData | Category::Application
+            ) {
+                assert!(
+                    detection.cleanup >= CleanupSafety::Review,
+                    "`{key}` ({}) is {}",
+                    detection.reason,
+                    detection.cleanup.label()
+                );
+            }
         }
     }
 

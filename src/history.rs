@@ -9,6 +9,10 @@
 //! filling, and — when the record is long enough to say so honestly — roughly
 //! when it runs out. Both are pure functions over [`Snapshot`] values, so the
 //! terminal report and the JSON document cannot disagree about the arithmetic.
+//!
+//! Every snapshot also records what the scanner covered, so neither mistakes a
+//! change in what Bloatrail counts — an upgrade that walks a new directory, a
+//! different `--include-hidden` — for a change on disk.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -56,11 +60,11 @@ pub struct Snapshot {
     pub categories: BTreeMap<String, u64>,
     /// The largest directories at scan time, as `(relative path, bytes)`.
     pub largest: Vec<(String, u64)>,
-    // The three fields below arrived after 0.3.0. They are additive and
-    // optional rather than a version bump: a bump would make every snapshot a
-    // user already recorded unreadable, which is a poor trade for three
-    // numbers. Old snapshots load with `None`; old binaries ignore the extra
-    // keys because the deserialiser does not deny unknown fields.
+    // The fields below arrived after 0.3.0. They are additive and optional
+    // rather than a version bump: a bump would make every snapshot a user
+    // already recorded unreadable, which is a poor trade for a few numbers.
+    // Old snapshots load with `None`; old binaries ignore the extra keys
+    // because the deserialiser does not deny unknown fields.
     /// Capacity of the volume holding the root, in bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk_total: Option<u64>,
@@ -70,6 +74,14 @@ pub struct Snapshot {
     /// Bytes Bloatrail judged recoverable at scan time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reclaimable: Option<u64>,
+    /// What the scanner counted: [`crate::scanner::coverage_stamp`] at scan
+    /// time.
+    ///
+    /// A snapshot without it was recorded before coverage was tracked, so
+    /// nothing is known about what it counted; it is treated as comparable
+    /// only with other unstamped snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<String>,
 }
 
 impl Snapshot {
@@ -114,6 +126,7 @@ impl Snapshot {
             disk_total: None,
             disk_available: None,
             reclaimable: None,
+            coverage: Some(scan.coverage.clone()),
         }
     }
 
@@ -178,12 +191,22 @@ pub struct Diff {
     pub directories: Vec<Change>,
     /// Total byte delta.
     pub net: i64,
+    /// Whether the two scans were counted under different coverage, so part
+    /// of every figure above may be the change in what was counted rather
+    /// than a change on disk.
+    pub coverage_changed: bool,
 }
 
 /// Compare two snapshots.
+///
+/// The comparison is made even when the two were counted under different
+/// coverage — someone asking "what changed since last time" still gets the
+/// numbers — but [`Diff::coverage_changed`] says so, and every renderer has to
+/// say it too.
 #[must_use]
 pub fn diff(previous: &Snapshot, current: &Snapshot) -> Diff {
     Diff {
+        coverage_changed: previous.coverage != current.coverage,
         from: previous.timestamp,
         to: current.timestamp,
         categories: rank(compare_maps(
@@ -430,7 +453,7 @@ pub enum Projection {
 /// Everything `bloatrail growth` reports, computed from the recorded series.
 #[derive(Debug, Clone)]
 pub struct Growth {
-    /// The recorded scans, oldest first.
+    /// The recorded scans that share the newest scan's coverage, oldest first.
     pub points: Vec<GrowthPoint>,
     /// Seconds between the first and last point.
     pub span: u64,
@@ -443,9 +466,23 @@ pub struct Growth {
     /// Net change in the scanned tree's bytes.
     pub net: i64,
     /// The volume's trajectory, when enough snapshots recorded free space.
+    ///
+    /// Measured across every recorded scan, `points` or not: free space is a
+    /// property of the volume, and what the scanner counted does not change it.
     pub volume: Option<VolumeTrend>,
     /// Bytes judged recoverable at the most recent scan.
     pub reclaimable_now: Option<u64>,
+    /// When the series crossed a change in coverage: the timestamp of the
+    /// first scan counted under the newest scan's rules. `None` when every
+    /// recorded scan shares them.
+    pub coverage_changed_at: Option<u64>,
+    /// How many recorded scans precede that change and were left out of
+    /// `points` and of every figure measured from them.
+    pub earlier_scans: usize,
+    /// How many recorded scans, across the whole record, noted the volume's
+    /// free space. `points` alone cannot say once a coverage change has cut
+    /// the earlier scans out of it.
+    pub recorded_free_space: usize,
 }
 
 /// Analyse a recorded series of snapshots, oldest first.
@@ -456,15 +493,23 @@ pub struct Growth {
 /// arrives here. Attribution compares the first snapshot against the last —
 /// the question is "what happened across this window", not a chain of
 /// pairwise diffs.
+///
+/// The window is the newest run of snapshots counted under the same coverage
+/// as the last one. A scan recorded before an upgrade that started counting
+/// `~/.julia`, or before `--include-hidden` was turned on, measured a
+/// different set of bytes; comparing against it would report the difference
+/// as growth that never happened on disk. So the window starts at the first
+/// scan under the current rules, and [`Growth::coverage_changed_at`] says
+/// where that was. The free-space trend is the exception: it reads the volume,
+/// not the tree, and keeps every point with the current capacity.
 #[must_use]
 pub fn growth(snapshots: &[Snapshot]) -> Option<Growth> {
-    let (first, last) = match snapshots {
-        [] => return None,
-        [only] => (only, only),
-        [first, .., last] => (first, last),
-    };
+    let last = snapshots.last()?;
+    let start = comparable_run_start(snapshots);
+    let window = &snapshots[start..];
+    let first = &window[0];
 
-    let points: Vec<GrowthPoint> = snapshots
+    let points: Vec<GrowthPoint> = window
         .iter()
         .map(|snapshot| GrowthPoint {
             timestamp: snapshot.timestamp,
@@ -481,8 +526,32 @@ pub fn growth(snapshots: &[Snapshot]) -> Option<Growth> {
         net: last.bytes as i64 - first.bytes as i64,
         volume: volume_trend(snapshots),
         reclaimable_now: last.reclaimable,
+        coverage_changed_at: (start > 0).then_some(first.timestamp),
+        earlier_scans: start,
+        recorded_free_space: snapshots
+            .iter()
+            .filter(|snapshot| snapshot.disk_available.is_some())
+            .count(),
         points,
     })
+}
+
+/// Index of the first snapshot in the newest run that shares the last
+/// snapshot's coverage.
+///
+/// A run, not a filter: if coverage went A, B, A, the scans under the first A
+/// are still on the far side of two changes, and a window spanning the B scans
+/// would compare across both. Unstamped snapshots form their own coverage —
+/// unknown — and match only each other, so a record made entirely before
+/// coverage was tracked behaves exactly as it always did.
+fn comparable_run_start(snapshots: &[Snapshot]) -> usize {
+    let Some(last) = snapshots.last() else {
+        return 0;
+    };
+    snapshots
+        .iter()
+        .rposition(|snapshot| snapshot.coverage != last.coverage)
+        .map_or(0, |index| index + 1)
 }
 
 /// The volume trajectory, from the snapshots that recorded free space.
@@ -805,6 +874,15 @@ mod tests {
             disk_total: None,
             disk_available: None,
             reclaimable: None,
+            coverage: None,
+        }
+    }
+
+    /// The same snapshot, recorded under the coverage `stamp`.
+    fn stamped(stamp: &str, snapshot: Snapshot) -> Snapshot {
+        Snapshot {
+            coverage: Some(stamp.to_string()),
+            ..snapshot
         }
     }
 
@@ -1084,6 +1162,7 @@ mod tests {
         assert_eq!(parsed.disk_total, None);
         assert_eq!(parsed.disk_available, None);
         assert_eq!(parsed.reclaimable, None);
+        assert_eq!(parsed.coverage, None);
     }
 
     #[test]
@@ -1274,5 +1353,181 @@ mod tests {
 
     fn labels_of<'a>(rows: &[&'a Change]) -> Vec<&'a str> {
         rows.iter().map(|change| change.label.as_str()).collect()
+    }
+
+    #[test]
+    fn a_coverage_change_mid_series_restarts_attribution_but_not_the_volume_trend() {
+        // Two scans under the old rules, then an upgrade that starts counting
+        // a 900-byte cache the old scans never saw. The tree really grew by
+        // 100 after that; the 900 is coverage, not growth.
+        let series = [
+            stamped(
+                "old",
+                Snapshot {
+                    disk_total: Some(100 * GB),
+                    disk_available: Some(40 * GB),
+                    ..snapshot(0, 100, &[("source_code", 100)], &[("src", 100)])
+                },
+            ),
+            stamped(
+                "old",
+                Snapshot {
+                    disk_total: Some(100 * GB),
+                    disk_available: Some(38 * GB),
+                    ..snapshot(DAY, 100, &[("source_code", 100)], &[("src", 100)])
+                },
+            ),
+            stamped(
+                "new",
+                Snapshot {
+                    disk_total: Some(100 * GB),
+                    disk_available: Some(36 * GB),
+                    ..snapshot(
+                        2 * DAY,
+                        1_000,
+                        &[("source_code", 100), ("package_cache", 900)],
+                        &[(".julia", 900), ("src", 100)],
+                    )
+                },
+            ),
+            stamped(
+                "new",
+                Snapshot {
+                    disk_total: Some(100 * GB),
+                    disk_available: Some(34 * GB),
+                    ..snapshot(
+                        3 * DAY,
+                        1_100,
+                        &[("source_code", 100), ("package_cache", 1_000)],
+                        &[(".julia", 1_000), ("src", 100)],
+                    )
+                },
+            ),
+        ];
+
+        let growth = growth(&series).expect("four points");
+        assert_eq!(growth.coverage_changed_at, Some(2 * DAY));
+        assert_eq!(growth.earlier_scans, 2);
+        assert_eq!(growth.points.len(), 2, "only the scans under the new rules");
+        assert_eq!(growth.points[0].timestamp, 2 * DAY);
+        assert_eq!(growth.span, DAY);
+        assert_eq!(
+            growth.net, 100,
+            "the 900 bytes newly counted are not growth"
+        );
+        assert_eq!(labels(&growth.categories), vec!["Package caches"]);
+        assert_eq!(growth.categories[0].delta, 100);
+        assert_eq!(labels(&growth.directories), vec![".julia"]);
+        assert_eq!(growth.directories[0].delta, 100);
+
+        // Free space is the volume's, whatever the scanner covered: every
+        // point still counts towards the trend.
+        let trend = growth.volume.expect("trend");
+        assert_eq!(trend.first_timestamp, 0);
+        assert_eq!(trend.rate_per_day, -2 * GB as i64);
+        assert_eq!(growth.recorded_free_space, 4);
+    }
+
+    #[test]
+    fn unstamped_snapshots_are_not_comparable_with_stamped_ones() {
+        // Recorded by a version that did not track coverage: what they
+        // counted is unknown, so the first stamped scan starts the window.
+        let series = [
+            snapshot(1, 100, &[("cache", 100)], &[("a", 100)]),
+            snapshot(2, 150, &[("cache", 150)], &[("a", 150)]),
+            stamped("now", snapshot(3, 900, &[("cache", 900)], &[("a", 900)])),
+        ];
+        let growth = growth(&series).expect("three points");
+        assert_eq!(growth.coverage_changed_at, Some(3));
+        assert_eq!(growth.earlier_scans, 2);
+        assert_eq!(growth.points.len(), 1);
+        assert_eq!(growth.net, 0);
+        assert!(growth.categories.is_empty());
+        assert!(growth.directories.is_empty());
+    }
+
+    #[test]
+    fn identical_stamps_behave_exactly_as_an_unstamped_record_always_did() {
+        let rows = [(1, 100, 100), (2, 900, 900), (3, 400, 400)];
+        let legacy: Vec<Snapshot> = rows
+            .iter()
+            .map(|&(t, b, c)| volume_snapshot(t * DAY, 100 * GB, (50 - t) * GB).with_sizes(b, c))
+            .collect();
+        let current: Vec<Snapshot> = legacy.iter().cloned().map(|s| stamped("same", s)).collect();
+
+        for series in [&legacy, &current] {
+            let growth = growth(series).expect("three points");
+            assert_eq!(growth.coverage_changed_at, None);
+            assert_eq!(growth.earlier_scans, 0);
+            assert_eq!(growth.points.len(), 3);
+            assert_eq!(growth.span, 2 * DAY);
+            assert_eq!(growth.net, 300);
+        }
+
+        let (a, b) = (growth(&legacy).unwrap(), growth(&current).unwrap());
+        assert_eq!(a.points, b.points);
+        assert_eq!(a.categories, b.categories);
+        assert_eq!(a.directories, b.directories);
+        assert_eq!(a.volume, b.volume);
+    }
+
+    #[test]
+    fn a_return_to_earlier_coverage_does_not_reach_back_across_the_change() {
+        // Hidden directories on, off, on again: the first scan matches the
+        // last, but the window would straddle two changes to reach it.
+        let series = [
+            stamped("all-hidden", snapshot(1, 900, &[], &[])),
+            stamped("default", snapshot(2, 100, &[], &[])),
+            stamped("all-hidden", snapshot(3, 950, &[], &[])),
+        ];
+        let growth = growth(&series).expect("three points");
+        assert_eq!(growth.coverage_changed_at, Some(3));
+        assert_eq!(growth.earlier_scans, 2);
+        assert_eq!(growth.net, 0);
+    }
+
+    #[test]
+    fn diff_flags_scans_counted_under_different_coverage() {
+        let before = snapshot(1, 100, &[("cache", 100)], &[]);
+        let after = snapshot(2, 1_000, &[("cache", 1_000)], &[]);
+
+        // Same rules, stamped or not: the numbers are growth.
+        assert!(!diff(&before, &after).coverage_changed);
+        let same = diff(&stamped("a", before.clone()), &stamped("a", after.clone()));
+        assert!(!same.coverage_changed);
+
+        // Different rules, or one side recorded before they were tracked:
+        // still compared, but flagged.
+        let changed = diff(&stamped("a", before.clone()), &stamped("b", after.clone()));
+        assert!(changed.coverage_changed);
+        assert_eq!(changed.net, 900, "the figures are still reported");
+        assert!(diff(&before, &stamped("b", after)).coverage_changed);
+    }
+
+    #[test]
+    fn the_coverage_stamp_round_trips_and_is_absent_when_unknown() {
+        let legacy = snapshot(1, 10, &[], &[]);
+        let text = serde_json::to_string(&legacy).unwrap();
+        assert!(
+            !text.contains("coverage"),
+            "an unknown stamp is left out, as older binaries wrote it"
+        );
+
+        let current = stamped("0123456789abcdef", legacy);
+        let text = serde_json::to_string(&current).unwrap();
+        let parsed: Snapshot = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed.coverage.as_deref(), Some("0123456789abcdef"));
+    }
+
+    impl Snapshot {
+        /// Override the tree size and its single category, keeping the rest.
+        fn with_sizes(self, bytes: u64, cache: u64) -> Snapshot {
+            Snapshot {
+                bytes,
+                categories: [("cache".to_string(), cache)].into_iter().collect(),
+                largest: vec![("a".to_string(), cache)],
+                ..self
+            }
+        }
     }
 }
