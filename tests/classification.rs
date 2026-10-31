@@ -305,3 +305,37 @@ fn category_totals_add_up_to_the_scanned_total() {
     );
     assert!(scan.categories.bytes(bloatrail::analysis::Category::Video) >= 2048);
 }
+
+#[test]
+fn dart_build_requires_manifest_and_coexists_with_android_gradle() {
+    let fixture = Fixture::new();
+    fixture.write("flutter/pubspec.yaml", b"name: demo\n");
+    fixture.write("flutter/pubspec.lock", b"packages: {}\n");
+    fixture.file("flutter/build/app.apk", 1024);
+    fixture.write("flutter/android/build.gradle", b"plugins {}\n");
+    fixture.file("flutter/android/build/app.apk", 1024);
+    fixture.write("dart/pubspec.yaml", b"name: demo\n");
+    fixture.file("dart/build/output", 1024);
+    fixture.write("decoy/pubspec.lock", b"packages: {}\n");
+    fixture.file("decoy/build/notes", 1024);
+    let scan = fixture.scan();
+    let flutter = detection_for(&scan, "flutter/build").expect("Flutter output");
+    assert_eq!(flutter.technology, Some(Technology::Dart));
+    assert_eq!(flutter.category, Category::BuildArtifact);
+    assert_eq!(flutter.cleanup, CleanupSafety::Safe);
+    assert_eq!(flutter.confidence, Confidence::High);
+    assert_eq!(
+        detection_for(&scan, "dart/build").unwrap().confidence,
+        Confidence::Medium
+    );
+    assert_eq!(
+        detection_for(&scan, "flutter/android/build")
+            .unwrap()
+            .technology,
+        Some(Technology::Gradle)
+    );
+    if let Some(decoy) = detection_for(&scan, "decoy/build") {
+        assert_ne!(decoy.technology, Some(Technology::Dart));
+        assert_ne!(decoy.cleanup, CleanupSafety::Safe);
+    }
+}
