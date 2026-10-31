@@ -1041,6 +1041,34 @@ fn growth(app: &mut App, bundle: &Arc<Bundle>, ui: &mut egui::Ui) {
             .color(safety_color(CleanupSafety::Review, dark)),
         );
     }
+    // Same account as `bloatrail growth`: earlier scans counted different
+    // directories, so comparing against them would invent growth. Shown
+    // before the series so it also explains a starting line that follows an
+    // upgrade rather than a first scan.
+    if let Some(growth) = bundle.growth.as_ref() {
+        if let Some(changed_at) = growth.coverage_changed_at {
+            let scans = if growth.earlier_scans == 1 {
+                "1 earlier scan was".to_string()
+            } else {
+                format!("{} earlier scans were", growth.earlier_scans)
+            };
+            ui.label(
+                RichText::new(format!(
+                    "Coverage changed on {}; growth is measured from then.",
+                    timefmt::format_timestamp(changed_at)
+                ))
+                .color(safety_color(CleanupSafety::Review, dark)),
+            );
+            ui.label(dim(
+                ui,
+                format!(
+                    "{scans} counted under different rules and left out. A Bloatrail \
+                     upgrade, or a change to the hidden-directory, symlink or exclude \
+                     settings, changes what a scan counts."
+                ),
+            ));
+        }
+    }
     ui.add_space(4.0);
     ui.separator();
 

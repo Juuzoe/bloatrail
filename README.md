@@ -278,6 +278,14 @@ The forecast follows the same rules as everything else here:
   current capacity count.
 - **A distant date is not a date.** More than a year out, the trend will not
   survive its own horizon, and the report says that instead.
+- **A change in what Bloatrail counts restarts the window.** Each scan records
+  a stamp of what it covered: which hidden directories it walked, the symlink,
+  filesystem and exclude settings, and the shared stores it recognises. An
+  upgrade that starts counting `~/.julia`, or one scan with `--include-hidden`,
+  would otherwise read as gigabytes of growth that never happened on disk, so
+  growth is measured from the first scan under the current rules and the
+  report says when that was. The free-space trend keeps every scan, because it
+  measures the volume rather than the tree.
 
 Every `scan`, `diff` and desktop-app scan adds a point of a few kilobytes,
 with nothing to set up and no daemon; `--no-record` opts a scan out. Until a
