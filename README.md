@@ -279,27 +279,20 @@ The forecast follows the same rules as everything else here:
 - **A distant date is not a date.** More than a year out, the trend will not
   survive its own horizon, and the report says that instead.
 
-Growth accumulates on its own: every `scan`, `diff` and desktop-app scan adds
-a point. There is
-nothing to set up, no daemon, and `--no-record` opts any scan out. The first
-run says so instead of pretending: growth is measured between scans, so the
-report starts when the second one lands. `bloatrail diff` remains the quick
-pairwise answer — what changed since last time — while `growth` reads the whole
-record.
+Every `scan`, `diff` and desktop-app scan adds a point of a few kilobytes,
+with nothing to set up and no daemon; `--no-record` opts a scan out. Until a
+second scan lands, the report says that growth is measured between scans
+rather than pretending. Reading the trend does not change it: `growth` records
+nothing unless given `--record`. History is thinned by age (every scan from the
+last week, one a day for a month, one a week for a year), so one busy afternoon
+cannot evict the months a trend needs. `bloatrail diff` stays the quick
+pairwise answer to what changed since last time.
 
-Reading a trend does not change it. `growth` does not record unless you pass
-`--record`, so checking three times in an afternoon leaves the series exactly
-as it was. What is kept is thinned by age rather than by count — everything
-from the last week, one a day for a month, one a week for a year — because a
-flat "keep the newest twenty" would let one busy afternoon evict the months
-that give a trend its meaning.
-
-The rate is fitted across every point rather than measured between the first
-and the last, for a reason that only shows up in use: `bloatrail clean` frees
-space, so on a machine where this tool is actually used the window often ends
-with *more* free space than it began with. Differencing the endpoints would
-read that as "not shrinking" and withhold the projection — going quiet for
-exactly the people using it most.
+The rate is a least-squares fit across every point, not the difference between
+the first and the last. `clean` frees space, so a window containing a cleanup
+often ends with more free space than it began with; comparing endpoints would
+call that "not shrinking" and withhold the projection from the people who use
+the tool most.
 
 ---
 
