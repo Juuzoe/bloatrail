@@ -64,7 +64,7 @@ pub fn run(context: &Context, args: &DiffArgs) -> Result<()> {
                 "the scan was interrupted, and a partial scan cannot be compared or recorded"
             );
         }
-        let current = history::Snapshot::from_scan(&scan, 25);
+        let current = context.snapshot(&scan);
         if !args.no_record {
             let _ = history::save(&current);
         }

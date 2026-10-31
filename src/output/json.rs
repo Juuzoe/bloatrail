@@ -761,6 +761,119 @@ pub fn diff_document(root: &Path, diff: &Diff) -> DiffDocument {
     }
 }
 
+/// The `growth` document.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrowthDocument {
+    /// Contract version.
+    pub schema_version: u32,
+    /// The scanned path.
+    pub root: String,
+    /// Every recorded scan, oldest first.
+    pub points: Vec<GrowthPointView>,
+    /// Seconds between the first and last point.
+    pub span_seconds: u64,
+    /// Category changes from the first point to the last.
+    pub categories: Vec<ChangeView>,
+    /// Directory changes from the first point to the last.
+    pub directories: Vec<ChangeView>,
+    /// Net byte change in the scanned tree.
+    pub net: i64,
+    /// The volume's trajectory, when enough scans recorded free space.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<VolumeTrendView>,
+    /// Bytes judged recoverable at the most recent scan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reclaimable_now: Option<u64>,
+}
+
+/// One recorded scan in the growth series.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrowthPointView {
+    /// When the scan ran, seconds since the Unix epoch.
+    pub timestamp: u64,
+    /// Total bytes under the root.
+    pub bytes: u64,
+    /// Free bytes on the volume, when recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk_available: Option<u64>,
+    /// Bytes judged recoverable, when recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reclaimable: Option<u64>,
+}
+
+/// The volume's trajectory across the recorded window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeTrendView {
+    /// Timestamp of the first usable point.
+    pub first_timestamp: u64,
+    /// Timestamp of the last usable point.
+    pub last_timestamp: u64,
+    /// Free bytes at the first usable point.
+    pub first_available: u64,
+    /// Free bytes at the last usable point.
+    pub last_available: u64,
+    /// Change in free bytes per day, averaged over the window. Negative
+    /// means the volume is filling.
+    pub rate_bytes_per_day: i64,
+    /// What the trend was able to say about the future: `full_around`,
+    /// `more_than_a_year`, `window_too_short` or `not_shrinking`.
+    pub projection: String,
+    /// Projected exhaustion, present only when `projection` is `full_around`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full_around: Option<u64>,
+}
+
+/// Build the `growth` document.
+#[must_use]
+pub fn growth_document(root: &Path, growth: &crate::history::Growth) -> GrowthDocument {
+    let convert = |changes: &[crate::history::Change]| {
+        changes
+            .iter()
+            .map(|change| ChangeView {
+                label: change.label.clone(),
+                delta: change.delta,
+            })
+            .collect()
+    };
+
+    let volume = growth.volume.as_ref().map(|trend| VolumeTrendView {
+        first_timestamp: trend.first_timestamp,
+        last_timestamp: trend.last_timestamp,
+        first_available: trend.first_available,
+        last_available: trend.last_available,
+        rate_bytes_per_day: trend.rate_per_day,
+        projection: match trend.projection {
+            crate::history::Projection::FullAround => "full_around",
+            crate::history::Projection::MoreThanAYear => "more_than_a_year",
+            crate::history::Projection::WindowTooShort => "window_too_short",
+            crate::history::Projection::NotShrinking => "not_shrinking",
+        }
+        .to_string(),
+        full_around: trend.full_at,
+    });
+
+    GrowthDocument {
+        schema_version: SCHEMA_VERSION,
+        root: display(root),
+        points: growth
+            .points
+            .iter()
+            .map(|point| GrowthPointView {
+                timestamp: point.timestamp,
+                bytes: point.bytes,
+                disk_available: point.disk_available,
+                reclaimable: point.reclaimable,
+            })
+            .collect(),
+        span_seconds: growth.span,
+        categories: convert(&growth.categories),
+        directories: convert(&growth.directories),
+        net: growth.net,
+        volume,
+        reclaimable_now: growth.reclaimable_now,
+    }
+}
+
 /// Serialise a document as pretty-printed JSON with a trailing newline.
 ///
 /// # Errors

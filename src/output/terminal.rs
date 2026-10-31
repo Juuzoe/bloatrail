@@ -4,6 +4,7 @@
 //! performs I/O or makes decisions, which keeps the renderers trivially
 //! testable and keeps presentation concerns out of the engine.
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -14,8 +15,8 @@ use crate::cleanup::planner::CleanupPlan;
 use crate::docker::{DockerResource, DockerStatus};
 use crate::doctor::{DoctorReport, Finding, Severity};
 use crate::duplicates::DuplicateReport;
-use crate::history::Diff;
-use crate::output::{pad_left, pad_right, truncate, Theme, BRAND};
+use crate::history::{Diff, Growth, Projection};
+use crate::output::{elide_start, pad_left, pad_right, truncate, Theme, BRAND};
 use crate::platform::{DiskUsage, KnownPaths};
 use crate::scanner::ScanResult;
 use crate::timefmt;
@@ -886,6 +887,346 @@ pub fn diff_report(diff: &Diff, theme: &Theme) -> String {
     out
 }
 
+/// The `growth` report: every recorded scan as one trajectory.
+///
+/// `scan` is the fresh scan the series ends with, when one was taken; it is
+/// what lets the directory rows carry live classifications. With `--stored`
+/// there is none and the rows stand unannotated.
+#[must_use]
+pub fn growth_report(
+    growth: &Growth,
+    root: &Path,
+    scan: Option<&ScanResult>,
+    theme: &Theme,
+    known: &KnownPaths,
+) -> String {
+    let mut out = String::with_capacity(2_048);
+    let _ = writeln!(
+        out,
+        "{} {}",
+        theme.heading("Growth of"),
+        theme.info(&known.display(root))
+    );
+
+    // The starting line. Every first run lands here, so it reads as the
+    // beginning of something rather than a failure to have a past.
+    if growth.points.len() < 2 {
+        let point = &growth.points[0];
+        let _ = writeln!(
+            out,
+            "{}",
+            theme.dim(&format!(
+                "First scan recorded: {} on {}.",
+                ByteSize(point.bytes),
+                timefmt::format_date(point.timestamp)
+            ))
+        );
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "Growth is measured between scans. Run `bloatrail scan` or `bloatrail growth`\n\
+             again after some time has passed — a day, a week, a build — and this report\n\
+             will show what changed and how fast this volume is filling."
+        );
+        return out;
+    }
+
+    let count = match growth.span {
+        // "over under a minute" is not a sentence; below a minute the
+        // timestamps beside it already say everything the span would.
+        0..=59 => format!("{} scans", growth.points.len()),
+        _ => format!(
+            "{} scans over {}",
+            growth.points.len(),
+            timefmt::humanize_span(growth.span)
+        ),
+    };
+    let _ = writeln!(
+        out,
+        "{}",
+        theme.dim(&format!(
+            "{count} · {} → {}",
+            timefmt::format_timestamp(growth.points[0].timestamp),
+            timefmt::format_timestamp(growth.points[growth.points.len() - 1].timestamp)
+        ))
+    );
+    let _ = writeln!(out);
+
+    // One row per recorded scan: when, how big, and — when the snapshot
+    // recorded it — how much room the volume had left. Dates carry the time
+    // of day only when the whole window fits inside two days, where the date
+    // alone would repeat itself down the column.
+    let close_together = growth.span < 2 * 86_400;
+    let max_bytes = growth.points.iter().map(|p| p.bytes).max().unwrap_or(0);
+    let bar_width = theme.width.saturating_sub(52).clamp(10, 22);
+    for point in &growth.points {
+        let when = if close_together {
+            timefmt::format_timestamp(point.timestamp)
+        } else {
+            timefmt::format_date(point.timestamp)
+        };
+        let fraction = ByteSize(point.bytes).fraction_of(ByteSize(max_bytes));
+        let free = match point.disk_available {
+            Some(available) => theme.dim(&format!("  {} free", ByteSize(available))),
+            None => String::new(),
+        };
+        let _ = writeln!(
+            out,
+            "  {}  {}  {}{}",
+            theme.dim(&when),
+            pad_left(&ByteSize(point.bytes).to_string(), SIZE_COLUMN),
+            theme.bar(fraction, bar_width),
+            free
+        );
+    }
+
+    let categories = reportable(&growth.categories);
+    let directories = reportable(&growth.directories);
+
+    if growth.categories.is_empty() && growth.directories.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "{}", theme.dim("Nothing changed across this window."));
+    } else {
+        if !categories.shown.is_empty() {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "{}", theme.heading("Where it went"));
+            for change in &categories.shown {
+                let _ = writeln!(
+                    out,
+                    "  {}  {}",
+                    pad_left(&signed(change.delta), SIZE_COLUMN),
+                    change.label
+                );
+            }
+            out.push_str(&categories.hidden_note(theme));
+        }
+
+        if !directories.shown.is_empty() {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "{}", theme.heading("By directory"));
+            let label_width = directories
+                .shown
+                .iter()
+                .map(|change| crate::output::display_width(&change.label))
+                .max()
+                .unwrap_or(0)
+                .clamp(12, 44);
+            for change in &directories.shown {
+                let annotation = scan
+                    .filter(|_| change.delta > 0)
+                    .and_then(|scan| growth_annotation(scan, root, &change.label));
+                let _ = writeln!(
+                    out,
+                    "  {}  {}{}",
+                    pad_left(&signed(change.delta), SIZE_COLUMN),
+                    match &annotation {
+                        Some(_) => pad_right(&elide_start(&change.label, label_width), label_width),
+                        None => change.label.clone(),
+                    },
+                    match &annotation {
+                        Some(text) => theme.dim(&format!("  {text}")),
+                        None => String::new(),
+                    }
+                );
+            }
+            out.push_str(&directories.hidden_note(theme));
+        }
+
+        let _ = writeln!(out);
+        let net = signed(growth.net);
+        let painted = if growth.net > 0 {
+            theme.review(&net)
+        } else {
+            theme.safe(&net)
+        };
+        let _ = writeln!(out, "Net change: {painted}");
+    }
+
+    out.push_str(&volume_section(growth, theme));
+
+    // The report ends with the way out. One figure, the same one `clean`
+    // would print, never a promise about the growth itself.
+    if let Some(reclaimable) = growth.reclaimable_now.filter(|bytes| *bytes > 0) {
+        let _ = writeln!(out);
+        let opening = if scan.is_some() {
+            format!(
+                "Of what is here today, {} is recoverable",
+                ByteSize(reclaimable)
+            )
+        } else {
+            format!(
+                "The most recent scan judged {} recoverable",
+                ByteSize(reclaimable)
+            )
+        };
+        let _ = writeln!(out, "{opening} — `bloatrail clean --dry-run` lists it.");
+    }
+
+    out
+}
+
+/// The volume trajectory paragraph of the growth report.
+fn volume_section(growth: &Growth, theme: &Theme) -> String {
+    let mut out = String::new();
+
+    let Some(trend) = &growth.volume else {
+        // Snapshots from before free space was recorded cannot say anything
+        // about the volume. Say why, and that the record heals itself.
+        let with_disk = growth
+            .points
+            .iter()
+            .filter(|p| p.disk_available.is_some())
+            .count();
+        if with_disk <= 1 {
+            let _ = writeln!(out);
+            let _ = writeln!(
+                out,
+                "{}",
+                theme.dim(
+                    "Earlier scans did not record the volume's free space; \
+                     the volume trend starts with the scans recorded from now on."
+                )
+            );
+        }
+        return out;
+    };
+
+    let _ = writeln!(out);
+    let _ = writeln!(out, "{}", theme.heading("This volume"));
+
+    let window = trend.last_timestamp.saturating_sub(trend.first_timestamp);
+    let from = ByteSize(trend.first_available);
+    let to = ByteSize(trend.last_available);
+
+    // A daily rate needs days behind it. Below the projection floor the only
+    // honest statement is the raw movement: extrapolating one build afternoon
+    // to "2.4 TB a day" would be arithmetic wearing a costume.
+    if window < crate::history::MIN_PROJECTION_SPAN {
+        let verb = match trend.rate_per_day {
+            0 => {
+                let _ = writeln!(out, "  Free space did not change across this window.");
+                return out;
+            }
+            rate if rate > 0 => "grew",
+            _ => "fell",
+        };
+        let _ = writeln!(
+            out,
+            "  Free space {verb} from {from} to {to} in {}.",
+            timefmt::humanize_span(window)
+        );
+        let _ = writeln!(
+            out,
+            "  {}",
+            theme.dim("Too short a window to read a daily trend from — scan again in a few days.")
+        );
+        return out;
+    }
+
+    let rate = ByteSize(trend.rate_per_day.unsigned_abs());
+    let movement = match trend.rate_per_day {
+        0 => "Free space did not change over this window.".to_string(),
+        rate_per_day if rate_per_day > 0 => format!(
+            "Free space grew from {from} to {to} — about {rate} a day, averaged over {}.",
+            timefmt::humanize_span(window)
+        ),
+        _ => format!(
+            "Free space fell from {from} to {to} — about {rate} a day, averaged over {}.",
+            timefmt::humanize_span(window)
+        ),
+    };
+    let _ = writeln!(out, "  {movement}");
+
+    match trend.projection {
+        Projection::FullAround => {
+            if let Some(full_at) = trend.full_at {
+                let distance = full_at.saturating_sub(trend.last_timestamp);
+                let line = format!(
+                    "At that rate, this volume runs out around {} — about {} from the last scan.",
+                    timefmt::format_date(full_at),
+                    timefmt::humanize_span(distance)
+                );
+                let _ = writeln!(out, "  {}", theme.review(&line));
+            }
+        }
+        Projection::MoreThanAYear => {
+            let _ = writeln!(
+                out,
+                "  {}",
+                theme.dim("At that rate, running out is more than a year away.")
+            );
+        }
+        // Unreachable once the window is past the floor above, but a match
+        // that says so beats an `unreachable!` that trusts it.
+        Projection::WindowTooShort | Projection::NotShrinking => {}
+    }
+
+    out
+}
+
+/// The rows of a change list worth printing, and a count of the rest.
+struct ReportableChanges<'a> {
+    shown: Vec<&'a crate::history::Change>,
+    hidden: usize,
+}
+
+impl ReportableChanges<'_> {
+    /// A dim tail line accounting for what the floor and the row cap hid.
+    fn hidden_note(&self, theme: &Theme) -> String {
+        if self.hidden == 0 {
+            return String::new();
+        }
+        format!(
+            "  {}\n",
+            theme.dim(&format!(
+                "… and {} smaller {}",
+                self.hidden,
+                plural(self.hidden as u64, "change")
+            ))
+        )
+    }
+}
+
+/// Filter a ranked change list down to the rows worth a line.
+///
+/// The floor is a thousandth of the biggest mover: a +79 B lockfile under a
+/// +75 MB build tree is real but not reportable at this altitude, while a
+/// small tree whose biggest change is a few kilobytes still shows everything.
+/// Nothing is hidden silently — the caller prints the count.
+fn reportable(changes: &[crate::history::Change]) -> ReportableChanges<'_> {
+    let floor = changes
+        .iter()
+        .map(|change| change.delta.abs())
+        .max()
+        .unwrap_or(0)
+        / 1_000;
+    let shown: Vec<&crate::history::Change> = changes
+        .iter()
+        .filter(|change| change.delta.abs() > floor)
+        .take(10)
+        .collect();
+    ReportableChanges {
+        hidden: changes.len() - shown.len(),
+        shown,
+    }
+}
+
+/// The live classification of a grown directory, phrased for one line.
+fn growth_annotation(scan: &ScanResult, root: &Path, label: &str) -> Option<String> {
+    let node = scan.tree.node(scan.tree.find(&root.join(label))?);
+    let detection = node.detection.as_ref()?;
+
+    let verdict = match detection.cleanup {
+        CleanupSafety::Safe | CleanupSafety::ProbablySafe => match &detection.regenerated_by {
+            Some(command) => Cow::Owned(format!("`{command}` recreates it")),
+            None => Cow::Borrowed("regenerable"),
+        },
+        CleanupSafety::Review => Cow::Borrowed("review before removing"),
+        CleanupSafety::Dangerous | CleanupSafety::NeverDelete => Cow::Borrowed("never offered"),
+    };
+    Some(format!("{} — {}", detection.reason, verdict))
+}
+
 /// Render a scan duration at a useful precision.
 ///
 /// `0.0s` tells the reader nothing; a fast scan deserves milliseconds and a slow
@@ -1049,6 +1390,54 @@ mod tests {
         let theme = Theme::new(ColorMode::Never, true);
         let text = docker_status(&DockerStatus::NotInstalled, &theme);
         assert!(text.contains("not installed"));
+    }
+
+    #[test]
+    fn a_single_growth_point_renders_as_a_starting_line() {
+        let theme = Theme::new(ColorMode::Never, true);
+        let growth = crate::history::Growth {
+            points: vec![crate::history::GrowthPoint {
+                timestamp: 1_700_000_000,
+                bytes: 1 << 20,
+                disk_available: None,
+                reclaimable: None,
+            }],
+            span: 0,
+            categories: Vec::new(),
+            directories: Vec::new(),
+            net: 0,
+            volume: None,
+            reclaimable_now: None,
+        };
+        let known = crate::platform::KnownPaths::empty();
+        let text = growth_report(&growth, Path::new("/scan"), None, &theme, &known);
+        assert!(text.contains("First scan recorded"));
+        assert!(!text.contains("Net change"), "there is no change yet");
+    }
+
+    #[test]
+    fn tiny_changes_are_counted_rather_than_listed() {
+        let big = crate::history::Change {
+            label: "target".to_string(),
+            delta: 75 << 20,
+        };
+        let tiny = crate::history::Change {
+            label: "src".to_string(),
+            delta: 79,
+        };
+        let changes = [big, tiny];
+        let rows = reportable(&changes);
+        assert_eq!(rows.shown.len(), 1);
+        assert_eq!(rows.hidden, 1);
+
+        // A small tree's small changes are still its whole story.
+        let changes = [crate::history::Change {
+            label: "notes".to_string(),
+            delta: 512,
+        }];
+        let rows = reportable(&changes);
+        assert_eq!(rows.shown.len(), 1);
+        assert_eq!(rows.hidden, 0);
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub mod diff;
 pub mod doctor;
 pub mod duplicates;
 pub mod explain;
+pub mod growth;
 pub mod largest;
 pub mod scan;
 pub mod tree;
@@ -168,6 +169,9 @@ pub enum Command {
     /// Compare against the previous scan of the same path.
     Diff(diff::DiffArgs),
 
+    /// Show what grew across every recorded scan, and when the volume runs out.
+    Growth(growth::GrowthArgs),
+
     /// Show or generate the configuration file.
     Config(config_cmd::ConfigArgs),
 
@@ -261,6 +265,21 @@ impl Context {
         }
     }
 
+    /// Summarise a completed scan for the history store.
+    ///
+    /// Every command that records history builds its snapshot here, so a
+    /// snapshot written by `scan`, `diff` or `growth` cannot disagree about
+    /// what gets recorded: the same top-directory count, the same volume
+    /// figures, and the same recoverable estimate `clean` would report.
+    #[must_use]
+    pub fn snapshot(&self, scan: &ScanResult) -> crate::history::Snapshot {
+        let reclaimable =
+            crate::cleanup::CleanupPlan::from_scan_with(scan, self.settings.stale_days)
+                .recoverable();
+        crate::history::Snapshot::from_scan(scan, 25)
+            .with_environment(crate::platform::disk_usage(&scan.root), reclaimable.0)
+    }
+
     /// Run a scan with the shared classifier and location registry.
     ///
     /// # Errors
@@ -319,6 +338,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Duplicates(args) => duplicates::run(&context, &args),
         Command::Doctor(args) => doctor::run(&context, &args),
         Command::Diff(args) => diff::run(&context, &args),
+        Command::Growth(args) => growth::run(&context, &args),
         Command::Config(args) => config_cmd::run(&context, &args),
         // Handled above, before the context was built.
         Command::Completions(args) => completions::run(&args),

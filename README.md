@@ -10,7 +10,10 @@
 Bloatrail is a developer-aware disk analyser written in Rust, with a command-line
 tool and a native desktop app. It identifies dependencies, build artifacts,
 caches, Git data and container storage, explains why each one sits on your disk,
-and offers to remove the parts your build tools can recreate.
+and offers to remove the parts your build tools can recreate. It also remembers
+every scan, so it can tell you [what has been growing, and roughly when the
+volume runs out](#what-grew-and-when-the-volume-runs-out) — and how much of the
+growth is regenerable.
 
 ![The Bloatrail desktop app showing a storage breakdown, an annotated directory tree, and the details panel explaining why a target directory is safe to remove](https://raw.githubusercontent.com/Juuzoe/bloatrail/main/docs/screenshots/overview.png)
 
@@ -157,6 +160,124 @@ The name matched twice and the verdict followed the evidence. Every rule in
 Bloatrail works this way: a directory earns its classification from the project
 around it, never from its name alone.
 
+### "So would you delete it?"
+
+Before trusting a tool that removes things, the question is less "what is this"
+than "what would you have done to it". `--why-not` answers that by *running the
+safety layer* and printing what it decided:
+
+```
+$ bloatrail explain C:\Projects\backend-api\.git --why-not
+
+Would `clean` remove it?
+No.
+`C:\Projects\backend-api\.git` was refused: its recorded classification does not permit deletion.
+Confidence and safety are independent: Bloatrail can be certain what
+this is and still refuse to remove it.
+```
+
+```
+$ bloatrail explain C:\Projects\backend-api\target --why-not
+
+Would `clean` remove it?
+Yes, if you select it. It is classified SAFE.
+It comes back with `cargo build`.
+Selection and confirmation are still required, and the same checks run
+again at the moment of deletion.
+```
+
+The refusal text is the guard's own, produced by the same code path a real
+`clean` would take. It is not a second description of the rules written
+alongside them, so it cannot quietly drift out of agreement with what the tool
+actually does.
+
+---
+
+## What grew, and when the volume runs out
+
+Every disk analyser answers "what is large today?". That is the wrong question
+on the day the disk fills up, because the answer has not changed in months —
+what you need to know is *what has been growing*, and how long you have.
+Monitoring stacks can plot the trend but cannot name the culprit; cleaners can
+name directories but have no memory. Bloatrail has both halves: every completed
+scan is recorded — a few kilobytes each — and `bloatrail growth` reads the
+series back.
+
+```
+$ bloatrail growth C:\Projects
+
+Growth of C:\Projects
+5 scans over 27 days · 2026-08-01 09:12 UTC → 2026-08-28 18:45 UTC
+
+  2026-08-01     11.2 GB  █████████████████░░░░░  62.3 GB free
+  2026-08-09     11.9 GB  ██████████████████░░░░  55.4 GB free
+  2026-08-16     12.8 GB  ████████████████████░░  44.0 GB free
+  2026-08-23     13.6 GB  █████████████████████░  30.8 GB free
+  2026-08-28     14.2 GB  ██████████████████████  21.9 GB free
+
+Where it went
+     +1.9 GB  Build artifacts
+     +610 MB  Developer dependencies
+     +480 MB  Caches
+      +85 MB  Logs
+  … and 3 smaller changes
+
+By directory
+     +1.4 GB  backend-api\target      Rust build artifacts — `cargo build` recreates it
+     +610 MB  dashboard\node_modules  pnpm dependencies — `pnpm install` recreates it
+     +480 MB  dashboard\.next         Next.js build cache — `next build` recreates it
+      +85 MB  backend-api\logs        Application logs — review before removing
+
+Net change: +3.0 GB
+
+This volume
+  Free space fell from 62.3 GB to 21.9 GB — about 1.5 GB a day, averaged over 27 days.
+  At that rate, this volume runs out around 2026-10-12 — about 14 days from the last scan.
+
+Of what is here today, 7.6 GB is recoverable — `bloatrail clean --dry-run` lists it.
+```
+
+Three tools' worth of answer in one report: the volume is filling, the build
+tree did most of it, and the largest movers are regenerable — each one
+annotated with the command that brings it back, and the way out at the bottom.
+
+The forecast follows the same rules as everything else here:
+
+- **The date is arithmetic, not prophecy.** It is the average rate across the
+  recorded window extended forward, it is always "around", and the report says
+  what window it came from. Growth attribution covers the scanned tree; the
+  free-space trend covers the whole volume, and the report keeps the two apart.
+- **A short record projects nothing.** Two scans an hour apart show what moved
+  and by how much, but Bloatrail will not stretch one build afternoon into a
+  calendar date: under 48 hours of history, it says the window is too short and
+  asks to be run again in a few days.
+- **A replaced or resized disk resets the trend.** A rate straddling a capacity
+  change would measure the hardware swap, not your usage, so only scans on the
+  current capacity count.
+- **A distant date is not a date.** More than a year out, the trend will not
+  survive its own horizon, and the report says that instead.
+
+Growth accumulates on its own: every `scan` and `diff` adds a point. There is
+nothing to set up, no daemon, and `--no-record` opts any scan out. The first
+run says so instead of pretending: growth is measured between scans, so the
+report starts when the second one lands. `bloatrail diff` remains the quick
+pairwise answer — what changed since last time — while `growth` reads the whole
+record.
+
+Reading a trend does not change it. `growth` does not record unless you pass
+`--record`, so checking three times in an afternoon leaves the series exactly
+as it was. What is kept is thinned by age rather than by count — everything
+from the last week, one a day for a month, one a week for a year — because a
+flat "keep the newest twenty" would let one busy afternoon evict the months
+that give a trend its meaning.
+
+The rate is fitted across every point rather than measured between the first
+and the last, for a reason that only shows up in use: `bloatrail clean` frees
+space, so on a machine where this tool is actually used the window often ends
+with *more* free space than it began with. Differencing the endpoints would
+read that as "not shrinking" and withhold the projection — going quiet for
+exactly the people using it most.
+
 ---
 
 ## The desktop app
@@ -262,10 +383,12 @@ bloatrail tree ~/Developer     # annotated directory tree
 bloatrail clean --dry-run      # what could be removed, and why
 bloatrail clean                # review, select, confirm, remove
 bloatrail explain ./target     # what is this, exactly?
+bloatrail explain ./target --why-not   # ...and would `clean` remove it?
 bloatrail largest --files      # biggest files, with categories and ages
 bloatrail duplicates           # byte-identical files
 bloatrail doctor               # read-only health check
 bloatrail diff                 # what changed since the last scan
+bloatrail growth               # what grew across every scan, and when the volume runs out
 bloatrail config --example     # a starter configuration file
 bloatrail completions <shell>  # bash, zsh, fish, powershell or elvish
 ```
@@ -299,10 +422,12 @@ reached so far, labelled as partial, and a cancelled scan is never recorded as a
 | `scan` | `--tree`, `--reclaim`, `--no-record` |
 | `tree` | `--max-children <N>` (default 12), `--no-bars` |
 | `clean` | `--dry-run`, `--all`, `--safe`, `--select <SPEC>`, `-y`/`--yes`, `--permanent` |
+| `explain` | `--why-not` |
 | `largest` | `--files`, `--dirs` |
 | `duplicates` | `--min-file-size <SIZE>` (default `1MB`) |
 | `doctor` | `--no-docker`, `--show-skipped` |
 | `diff` | `--stored`, `--no-record` |
+| `growth` | `--stored`, `--record` |
 | `config` | `--example`, `--path`, `--init` |
 
 ### Sizes next to what you can get back
@@ -603,6 +728,7 @@ the internal engine types, and every document carries `schema_version`.
 bloatrail scan --json   | jq '.categories[] | select(.bytes > 1e9)'
 bloatrail clean --json  | jq '.groups[] | select(.safety == "safe") | .title'
 bloatrail doctor --json | jq '.findings[] | select(.severity == "warn")'
+bloatrail growth --json | jq '.volume.full_around'
 ```
 
 ```json
@@ -700,7 +826,7 @@ src/
 ├── pattern.rs           the exclusion glob matcher
 ├── timefmt.rs           minimal date and duration formatting
 ├── config.rs            defaults < config file < command line
-├── history.rs           scan snapshots and `diff`
+├── history.rs           scan snapshots, `diff`, and the `growth` trajectory
 ├── docker.rs            Docker CLI integration, with a timeout
 ├── duplicates.rs        staged duplicate detection
 ├── doctor.rs            read-only health checks

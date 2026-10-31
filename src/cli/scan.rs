@@ -38,11 +38,11 @@ pub fn run(context: &Context, args: &ScanArgs) -> Result<()> {
 
     // History is best-effort: a read-only home directory should not turn a
     // successful scan into a failure. A cancelled scan is never recorded,
-    // because its partial totals would make the next `diff` report phantom
-    // growth against a baseline that covered a fraction of the tree.
+    // because its partial totals would make the next `diff` or `growth`
+    // report phantom growth against a baseline that covered a fraction of
+    // the tree.
     if !args.no_record && !scan.cancelled {
-        let snapshot = crate::history::Snapshot::from_scan(&scan, 25);
-        let _ = crate::history::save(&snapshot);
+        let _ = crate::history::save(&context.snapshot(&scan));
     }
 
     if context.json {

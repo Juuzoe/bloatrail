@@ -16,6 +16,37 @@ pub fn format_timestamp(seconds: u64) -> String {
     format!("{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02} UTC")
 }
 
+/// Format a Unix timestamp as `YYYY-MM-DD` in UTC.
+///
+/// Used where the day is the interesting unit — a projected date, a row in a
+/// growth table — and minutes would be noise dressed up as precision.
+#[must_use]
+pub fn format_date(seconds: u64) -> String {
+    let (year, month, day) = civil_from_days((seconds / 86_400) as i64);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// Describe a span of `seconds` in its largest sensible unit.
+#[must_use]
+pub fn humanize_span(seconds: u64) -> String {
+    match seconds {
+        0..=59 => "under a minute".to_string(),
+        60..=3_599 => plural_span(seconds / 60, "minute"),
+        3_600..=86_399 => plural_span(seconds / 3_600, "hour"),
+        86_400..=2_591_999 => plural_span(seconds / 86_400, "day"),
+        2_592_000..=31_535_999 => plural_span(seconds / 2_592_000, "month"),
+        _ => plural_span(seconds / 31_536_000, "year"),
+    }
+}
+
+fn plural_span(value: u64, unit: &str) -> String {
+    if value == 1 {
+        format!("1 {unit}")
+    } else {
+        format!("{value} {unit}s")
+    }
+}
+
 /// Describe how long ago `seconds` was, relative to `now`.
 #[must_use]
 pub fn humanize_age(seconds: u64, now: u64) -> String {
@@ -99,5 +130,21 @@ mod tests {
     #[test]
     fn future_timestamps_do_not_underflow() {
         assert_eq!(humanize_age(2_000, 1_000), "just now");
+    }
+
+    #[test]
+    fn dates_drop_the_time_of_day() {
+        assert_eq!(format_date(1_709_210_040), "2024-02-29");
+        assert_eq!(format_date(0), "1970-01-01");
+    }
+
+    #[test]
+    fn spans_are_described_in_the_largest_sensible_unit() {
+        assert_eq!(humanize_span(30), "under a minute");
+        assert_eq!(humanize_span(60), "1 minute");
+        assert_eq!(humanize_span(7_200), "2 hours");
+        assert_eq!(humanize_span(86_400 * 27), "27 days");
+        assert_eq!(humanize_span(86_400 * 45), "1 month");
+        assert_eq!(humanize_span(86_400 * 800), "2 years");
     }
 }

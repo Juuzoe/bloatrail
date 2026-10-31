@@ -16,6 +16,13 @@ use crate::output::{json, terminal};
 pub struct ExplainArgs {
     /// The file or directory to explain.
     pub path: PathBuf,
+
+    /// Show what the safety layer would decide, and why.
+    ///
+    /// Runs the real guard rather than describing it, so the answer is the
+    /// behaviour rather than a second account of it.
+    #[arg(long)]
+    pub why_not: bool,
 }
 
 /// Run the command.
@@ -49,6 +56,11 @@ pub fn run(context: &Context, args: &ExplainArgs) -> Result<()> {
         &context.known,
     );
 
+    if args.why_not {
+        out.push('\n');
+        out.push_str(&verdict(context, &scan, detection.as_ref()));
+    }
+
     // Show the biggest things inside, which is usually the next question.
     let children = &scan.tree.node(scan.tree.root()).children;
     if !children.is_empty() {
@@ -65,6 +77,96 @@ pub fn run(context: &Context, args: &ExplainArgs) -> Result<()> {
     }
 
     context.emit(&out)
+}
+
+/// What `bloatrail clean` would decide about this directory, and why.
+///
+/// The answer comes from running the actual [`SafetyGuard`] over an actual
+/// [`CleanupTarget`], not from a second description of the rules. A guard that
+/// refuses returns its own sentence, so this narration cannot drift away from
+/// the behaviour it reports: if the two ever disagreed, it would be because
+/// the guard changed, and the change would show up here immediately.
+///
+/// [`SafetyGuard`]: crate::cleanup::safety::SafetyGuard
+/// [`CleanupTarget`]: crate::cleanup::planner::CleanupTarget
+fn verdict(
+    context: &Context,
+    scan: &crate::scanner::ScanResult,
+    detection: Option<&Detection>,
+) -> String {
+    use crate::cleanup::planner::CleanupPlan;
+    use crate::cleanup::safety::SafetyGuard;
+
+    let mut out = context.theme.heading("Would `clean` remove it?\n");
+
+    let Some(detection) = detection else {
+        out.push_str(
+            "No. Nothing here matched a cleanup rule, and Bloatrail never removes\n\
+             storage it cannot identify.\n",
+        );
+        return out;
+    };
+
+    // The plan is built the same way `clean` builds it, so the target under
+    // test is the one `clean` would actually hand to the guard.
+    let plan = CleanupPlan::from_scan_with(scan, context.settings.stale_days);
+    let target = plan
+        .groups
+        .iter()
+        .flat_map(|group| &group.targets)
+        .find(|target| target.path == scan.root);
+
+    let Some(target) = target else {
+        out.push_str(&format!(
+            "No. It is classified {}, so it is reported but never offered.\n",
+            context
+                .theme
+                .by_safety(detection.cleanup, detection.cleanup.label())
+        ));
+        if !detection.cleanup.is_deletable() {
+            out.push_str(&format!(
+                "{}\n",
+                context.theme.dim(
+                    "Confidence and safety are independent: Bloatrail can be certain what\n\
+                     this is and still refuse to remove it."
+                )
+            ));
+        }
+        return out;
+    };
+
+    // `Review` is the most permissive limit `clean` ever runs with, so asking
+    // at that limit reports the guard's own opinion rather than the caller's.
+    let guard = SafetyGuard::new(
+        &scan.root,
+        &context.known,
+        &context.classifier,
+        CleanupSafety::Review,
+    );
+
+    match guard.verify(target) {
+        Ok(()) => {
+            out.push_str(&format!(
+                "Yes, if you select it. It is classified {}.\n",
+                context
+                    .theme
+                    .by_safety(detection.cleanup, detection.cleanup.label())
+            ));
+            if let Some(command) = &detection.regenerated_by {
+                out.push_str(&format!("It comes back with `{command}`.\n"));
+            }
+            out.push_str(&context.theme.dim(
+                "Selection and confirmation are still required, and the same checks run\n\
+                 again at the moment of deletion.\n",
+            ));
+        }
+        Err(error) => {
+            out.push_str(&format!("{}\n", context.theme.danger("No.")));
+            out.push_str(&format!("{error}\n"));
+        }
+    }
+
+    out
 }
 
 /// Files get a shorter answer, but the same honesty about what is safe.

@@ -55,6 +55,7 @@ fn version_and_help_are_available() {
         "duplicates",
         "doctor",
         "diff",
+        "growth",
     ] {
         assert!(
             text.contains(command),
@@ -491,6 +492,179 @@ fn diff_needs_a_previous_scan_and_then_reports_growth() {
     assert!(text.contains("Disk change since last scan"));
     assert!(text.contains("Net change"));
     assert!(text.contains('+'));
+}
+
+#[test]
+fn growth_begins_as_a_starting_line_and_then_attributes_what_grew() {
+    let fixture = Fixture::new();
+    sample(&fixture);
+    let state = Fixture::new();
+    let root = fixture.path().to_string_lossy().into_owned();
+
+    // The first run has no past to compare against. That is the normal way
+    // to meet this command, so it succeeds and says how growth begins.
+    let first = run(state.path(), &["growth", &root, "--no-progress"]);
+    assert!(first.status.success());
+    let text = stdout(&first);
+    assert!(text.contains("First scan recorded"));
+    assert!(text.contains("measured between scans"));
+
+    // `scan` is what builds the record; `growth` reads it without adding to
+    // it, so that checking a trend cannot reshape the trend.
+    run(state.path(), &["scan", &root, "--no-progress"]);
+
+    // Grow the build tree and ask again: two points, an attribution, and the
+    // grown directory annotated with the live classification.
+    fixture.file("api/target/debug/extra.bin", 5_000_000);
+    let second = run(state.path(), &["growth", &root, "--no-progress"]);
+    assert!(second.status.success());
+    let text = stdout(&second);
+    assert!(text.contains("2 scans"));
+    assert!(text.contains("Where it went"));
+    assert!(text.contains("Build artifacts"));
+    assert!(text.contains("`cargo build` recreates it"));
+    assert!(text.contains("Net change"));
+}
+
+#[test]
+fn growth_stored_reads_the_record_and_fails_without_one() {
+    let fixture = Fixture::new();
+    sample(&fixture);
+    let state = Fixture::new();
+    let root = fixture.path().to_string_lossy().into_owned();
+
+    let empty = run(state.path(), &["growth", &root, "--stored"]);
+    assert!(!empty.status.success(), "nothing recorded, nothing to read");
+
+    run(state.path(), &["scan", &root, "--no-progress"]);
+    let stored = run(state.path(), &["growth", &root, "--stored"]);
+    assert!(stored.status.success());
+    assert!(!stdout(&stored).is_empty());
+}
+
+#[test]
+fn snapshots_recorded_in_the_same_second_are_both_kept() {
+    // In-process rather than through the binary: the collision under test is
+    // two saves inside one second, which two process spawns cannot hit
+    // reliably. Every spawned binary in this file gets its own explicit
+    // `BLOATRAIL_HOME`, so setting the process-level one here races nothing.
+    let state = Fixture::new();
+    std::env::set_var("BLOATRAIL_HOME", state.path());
+
+    let snapshot = bloatrail::history::Snapshot {
+        version: bloatrail::history::SNAPSHOT_VERSION,
+        root: state.path().join("scanned"),
+        timestamp: 1_700_000_000,
+        bytes: 10,
+        files: 1,
+        dirs: 1,
+        categories: Default::default(),
+        largest: Vec::new(),
+        disk_total: None,
+        disk_available: None,
+        reclaimable: None,
+    };
+    let first = bloatrail::history::save(&snapshot).expect("first save");
+    let second = bloatrail::history::save(&snapshot).expect("second save");
+    assert_ne!(first, second, "a colliding name must be nudged, not reused");
+
+    let loaded = bloatrail::history::load_all(&snapshot.root).expect("load");
+    std::env::remove_var("BLOATRAIL_HOME");
+    assert_eq!(
+        loaded.len(),
+        2,
+        "the second scan must not replace the first"
+    );
+}
+
+#[test]
+fn growth_json_is_machine_readable() {
+    let fixture = Fixture::new();
+    sample(&fixture);
+    let state = Fixture::new();
+    let root = fixture.path().to_string_lossy().into_owned();
+
+    run(state.path(), &["scan", &root, "--no-progress"]);
+    fixture.file("api/target/debug/extra.bin", 5_000_000);
+
+    let output = run(state.path(), &["growth", &root, "--json"]);
+    assert!(output.status.success());
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout(&output)).expect("output should be valid JSON");
+
+    assert_eq!(document["schema_version"], 1);
+    let points = document["points"].as_array().expect("points");
+    assert_eq!(points.len(), 2);
+    // Every recorded point carries the volume figures that make the trend
+    // possible, from the moment this version records it.
+    for point in points {
+        assert!(point["timestamp"].is_u64());
+        assert!(point["bytes"].is_u64());
+        assert!(point["disk_available"].is_u64());
+        assert!(point["reclaimable"].is_u64());
+    }
+    assert!(document["net"].as_i64().expect("net") > 0);
+}
+
+#[test]
+fn explain_why_not_answers_from_the_real_safety_guard() {
+    let fixture = Fixture::new();
+    sample(&fixture);
+    fixture.write(
+        "api/.git/HEAD",
+        b"ref: refs/heads/main
+",
+    );
+    let state = Fixture::new();
+
+    // Regenerable build output: offered, with the command that brings it back.
+    let target = fixture.join("api/target");
+    let output = run(
+        state.path(),
+        &[
+            "explain",
+            &target.to_string_lossy(),
+            "--why-not",
+            "--no-progress",
+        ],
+    );
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("Would `clean` remove it?"));
+    assert!(text.contains("Yes, if you select it"));
+    assert!(text.contains("cargo build"));
+
+    // Git data: identified with certainty and still refused, which is the
+    // distinction the product is built on.
+    let git = fixture.join("api/.git");
+    let output = run(
+        state.path(),
+        &[
+            "explain",
+            &git.to_string_lossy(),
+            "--why-not",
+            "--no-progress",
+        ],
+    );
+    assert!(output.status.success());
+    let text = stdout(&output);
+    assert!(text.contains("No."), "git data must not be offered: {text}");
+    assert!(text.contains("Confidence and safety are independent"));
+
+    // A `target` with no project around it: same name, opposite answer.
+    let decoy = fixture.join("marketing/target");
+    fixture.file("marketing/target/data.csv", 2048);
+    let output = run(
+        state.path(),
+        &[
+            "explain",
+            &decoy.to_string_lossy(),
+            "--why-not",
+            "--no-progress",
+        ],
+    );
+    assert!(output.status.success());
+    assert!(stdout(&output).contains("No."));
 }
 
 #[test]
