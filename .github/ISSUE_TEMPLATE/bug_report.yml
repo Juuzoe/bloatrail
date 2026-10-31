@@ -32,7 +32,7 @@ body:
     attributes:
       label: Version
       description: The output of `bloatrail --version`.
-      placeholder: bloatrail 0.3.0
+      placeholder: bloatrail 0.4.0
     validations:
       required: true
 

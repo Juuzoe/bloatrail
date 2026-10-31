@@ -12,7 +12,7 @@
     Piping to iex leaves no way to pass parameters, so the options are
     environment variables:
 
-      $env:BLOATRAIL_VERSION      = 'v0.3.0'   # install a specific tag
+      $env:BLOATRAIL_VERSION      = 'v0.4.0'   # install a specific tag
       $env:BLOATRAIL_INSTALL_DIR  = 'C:\tools' # install somewhere else
       $env:BLOATRAIL_NO_VERIFY    = '1'        # proceed without a checksum
 #>
