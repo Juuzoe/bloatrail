@@ -17,6 +17,7 @@ pub mod jvm;
 pub mod native_pkg;
 pub mod python;
 pub mod rust;
+pub mod unreal;
 
 /// Specificity for detections corroborated by project marker files.
 pub(crate) const SPEC_CONTEXT: u16 = 90;
@@ -44,6 +45,7 @@ pub fn all() -> Vec<Box<dyn Detector>> {
         Box::new(cpp::NativeBuildDir),
         Box::new(git::VersionControl),
         Box::new(ide::IdeStorage),
+        Box::new(unreal::UnrealEngineOutput),
         Box::new(native_pkg::VendoredDependencies),
         Box::new(native_pkg::LanguageBuildDirs),
         Box::new(generic::LogDirectory),

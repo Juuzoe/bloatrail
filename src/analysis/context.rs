@@ -125,6 +125,8 @@ bitflags! {
         const NX_JSON          = 1 << 51;
         /// `wrangler.toml` / `wrangler.json(c)` (Cloudflare Workers)
         const WRANGLER         = 1 << 49;
+        /// `*.uproject` (Unreal Engine project marker)
+        const UPROJECT         = 1 << 52;
     }
 }
 
@@ -289,6 +291,7 @@ impl Markers {
             Some("sln" | "slnx") => *self |= Markers::DOTNET_SOLUTION,
             Some("cabal") => *self |= Markers::HASKELL_PROJECT,
             Some("tf") => *self |= Markers::TERRAFORM,
+            Some("uproject") => *self |= Markers::UPROJECT,
             _ => {}
         }
     }
@@ -389,6 +392,30 @@ mod tests {
     }
 
     #[test]
+    fn every_single_marker_has_its_own_bit() {
+        // Two markers declared on the same bit compile without complaint and
+        // make one file stand in for the other, so a `pubspec.lock` would
+        // quietly count as an Unreal project. Branches that add a marker each
+        // pick "the next free bit" and collide when merged.
+        use bitflags::Flags;
+        let mut seen: Vec<(&str, u64)> = Vec::new();
+        for flag in Markers::FLAGS {
+            let bits = flag.value().bits();
+            if bits.count_ones() != 1 {
+                continue;
+            }
+            if let Some((other, _)) = seen.iter().find(|(_, b)| *b == bits) {
+                panic!(
+                    "{} and {other} share bit {}",
+                    flag.name(),
+                    bits.trailing_zeros()
+                );
+            }
+            seen.push((flag.name(), bits));
+        }
+    }
+
+    #[test]
     fn detects_rust_project_markers() {
         let markers = markers_from(&["Cargo.toml", "Cargo.lock"], &["src"]);
         assert!(markers.contains(Markers::CARGO_TOML));
@@ -416,6 +443,12 @@ mod tests {
         assert!(markers_from(&["Api.csproj"], &[]).contains(Markers::DOTNET_PROJECT));
         assert!(markers_from(&["App.fsproj"], &[]).contains(Markers::DOTNET_PROJECT));
         assert!(markers_from(&["Solution.sln"], &[]).contains(Markers::DOTNET_SOLUTION));
+    }
+
+    #[test]
+    fn unreal_markers_come_from_extensions() {
+        assert!(markers_from(&["MyGame.uproject"], &[]).contains(Markers::UPROJECT));
+        assert!(!markers_from(&["uproject"], &[]).contains(Markers::UPROJECT));
     }
 
     #[test]

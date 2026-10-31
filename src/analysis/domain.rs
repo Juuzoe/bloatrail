@@ -214,6 +214,8 @@ pub enum Technology {
     Android,
     /// Unity game engine.
     Unity,
+    /// Unreal Engine.
+    UnrealEngine,
     /// Docker or a compatible container engine.
     Docker,
     /// Git.
@@ -261,6 +263,7 @@ impl Technology {
             Technology::Terraform => "Terraform",
             Technology::Android => "Android",
             Technology::Unity => "Unity",
+            Technology::UnrealEngine => "Unreal Engine",
             Technology::Docker => "Docker",
             Technology::Git => "Git",
             Technology::VsCode => "VS Code",
