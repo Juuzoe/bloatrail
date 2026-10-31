@@ -151,10 +151,10 @@ one directory the tool exists to find.
 
 ### Coverage
 
-What a scan counts changes over time: an upgrade starts walking a directory or
-recognising a store, a setting such as `--include-hidden` is turned on. Every
-recorded scan now says what it covered, so `growth` and `diff` stop reporting
-those changes as growth.
+A dot-directory missing from the traversal allowlist is counted nowhere, and a
+shared store missing from the registry of well-known locations is categorised
+file by file. Both gaps are smaller now, and because closing a gap changes what
+a scan counts, every recorded scan says what it covered.
 
 - Every snapshot records a coverage stamp: a short digest of the
   always-traversed list, the hidden-directory, symlink, filesystem and exclude
@@ -177,6 +177,34 @@ those changes as growth.
 - JSON: `diff` gains `coverage_changed`; `growth` gains `coverage_changed_at`
   (absent when coverage never changed) and `earlier_scans`, and its `points`
   hold only the comparable scans. All additive, so `schema_version` stays 1.
+- Walked by default now: `.pub-cache`, `.ivy2`, `.sbt`, `.stack`, `.ghcup`,
+  `.elan`, `.opam`, `.julia`, `.hex`, `.conan`, `.conan2`, `.volta`,
+  `.terraform.d`, `.vagrant.d`, `.platformio`, `.espressif` and `.arduino15`.
+  `~/.terraform.d/plugin-cache` was registered before, but its parent was never
+  walked, so it was never seen. `.lima`, `.colima` and `.minikube` stay behind
+  `--include-hidden`: they keep SSH keys and cluster certificates beside the
+  VM disks.
+- New well-known locations offered as safe, because the owning tool refills
+  them on demand: pre-commit's hook environments, the Hex, opam, nvm,
+  SDKMAN!, GHCup, Volta, ESP-IDF, Arduino and PlatformIO download caches,
+  Julia's precompilation cache, Bazelisk's downloads and node-gyp's headers.
+- Probably safe, because they come back at a cost or need a step before
+  projects build again: Dart's pub cache, Coursier, Ivy, sbt's launcher
+  downloads, Stack's package index and snapshot builds, Conan 1 and 2 package
+  caches (locally built packages take hours to rebuild), Julia packages and
+  artifacts, PlatformIO toolchains, ESP-IDF tools and Python environments,
+  minikube's download cache and Electron's binary cache.
+- Held for review and reclaimed through the tool that owns them, because they
+  are choices or state: Node.js versions under nvm and Volta, pyenv versions
+  (which can be pyenv-virtualenv environments), SDKMAN! candidates, elan
+  toolchains, GHCup and Stack compilers, Arduino board cores, Vagrant boxes,
+  minikube machines, Lima and Colima VMs, and Bazel's output root, which is
+  cleared with `bazel clean --expunge`: deleting files under a running Bazel
+  server is not safe, and Bazel marks its outputs read-only.
+- Stores that move between platforms are registered where each platform puts
+  them: `~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on
+  Windows (Coursier, Bazelisk, Electron, node-gyp, Cypress, Playwright, pub,
+  Volta, Arduino), and Bazel's `_bazel_<user>` output root on each.
 
 ### Tests
 

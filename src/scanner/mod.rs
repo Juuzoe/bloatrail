@@ -579,7 +579,7 @@ mod tests {
         // changes too, and every user's next `growth` starts a new window at
         // the first scan recorded under it. Update it deliberately.
         let stamp = coverage_stamp(&ScanOptions::new("/a"), &KnownPaths::empty());
-        assert_eq!(stamp, "fdac67f6d581f571");
+        assert_eq!(stamp, "239794fd5907a0c6");
     }
 
     #[test]

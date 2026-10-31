@@ -232,6 +232,24 @@ pub enum Technology {
     Xcode,
     /// Homebrew.
     Homebrew,
+    /// Julia.
+    Julia,
+    /// Lean.
+    Lean,
+    /// OCaml / opam.
+    Ocaml,
+    /// PlatformIO embedded toolchains.
+    PlatformIo,
+    /// Espressif's ESP-IDF.
+    EspIdf,
+    /// Arduino.
+    Arduino,
+    /// Vagrant.
+    Vagrant,
+    /// Lima virtual machines.
+    Lima,
+    /// Kubernetes tooling such as minikube.
+    Kubernetes,
     /// The operating system itself.
     System,
 }
@@ -274,6 +292,15 @@ impl Technology {
             Technology::VisualStudio => "Visual Studio",
             Technology::Xcode => "Xcode",
             Technology::Homebrew => "Homebrew",
+            Technology::Julia => "Julia",
+            Technology::Lean => "Lean",
+            Technology::Ocaml => "OCaml",
+            Technology::PlatformIo => "PlatformIO",
+            Technology::EspIdf => "ESP-IDF",
+            Technology::Arduino => "Arduino",
+            Technology::Vagrant => "Vagrant",
+            Technology::Lima => "Lima",
+            Technology::Kubernetes => "Kubernetes",
             Technology::System => "System",
         }
     }

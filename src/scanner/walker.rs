@@ -803,7 +803,8 @@ fn is_hidden(name: &str) -> bool {
 ///
 /// Only directories whose bulk is regenerable belong here. A dot-directory
 /// that is mostly credentials or configuration (`.ssh`, `.aws`, `.kube`) stays
-/// out.
+/// out, and so do `.lima`, `.colima` and `.minikube`, which keep SSH keys and
+/// cluster certificates beside virtual-machine disks.
 pub const ALWAYS_TRAVERSED: &[&str] = &[
     // Version control.
     ".git",
@@ -886,6 +887,23 @@ pub const ALWAYS_TRAVERSED: &[&str] = &[
     ".pyenv",
     ".nvm",
     ".sdkman",
+    ".volta",
+    ".pub-cache",
+    ".ivy2",
+    ".sbt",
+    ".stack",
+    ".ghcup",
+    ".elan",
+    ".opam",
+    ".julia",
+    ".hex",
+    ".conan",
+    ".conan2",
+    ".terraform.d",
+    ".vagrant.d",
+    ".platformio",
+    ".espressif",
+    ".arduino15",
 ];
 
 fn is_always_traversed(name: &str) -> bool {
@@ -966,6 +984,50 @@ mod tests {
             );
         }
         assert!(!is_always_traversed(".secret-stuff"));
+    }
+
+    #[test]
+    fn shared_tool_homes_are_traversed_but_credential_and_machine_homes_are_not() {
+        for name in [
+            ".pub-cache",
+            ".ivy2",
+            ".sbt",
+            ".stack",
+            ".conan",
+            ".conan2",
+            ".julia",
+            ".elan",
+            ".ghcup",
+            ".opam",
+            ".hex",
+            ".volta",
+            ".terraform.d",
+            ".vagrant.d",
+            ".platformio",
+            ".espressif",
+            ".arduino15",
+        ] {
+            assert!(
+                is_always_traversed(name),
+                "{name} holds regenerable bulk that would otherwise be counted nowhere"
+            );
+        }
+        for name in [
+            ".ssh",
+            ".gnupg",
+            ".aws",
+            ".kube",
+            ".azure",
+            ".password-store",
+            ".lima",
+            ".colima",
+            ".minikube",
+        ] {
+            assert!(
+                !is_always_traversed(name),
+                "{name} keeps keys or certificates and is walked only on request"
+            );
+        }
     }
 
     #[test]
