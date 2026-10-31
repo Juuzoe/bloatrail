@@ -339,3 +339,25 @@ fn dart_build_requires_manifest_and_coexists_with_android_gradle() {
         assert_ne!(decoy.cleanup, CleanupSafety::Safe);
     }
 }
+
+#[test]
+fn nx_cache_requires_nx_json_and_is_visible_in_default_scans() {
+    let fixture = Fixture::new();
+    fixture.write("nx-app/nx.json", b"{}\n");
+    fixture.file("nx-app/.nx/cache/task/output", 1024);
+    fixture.write("ordinary-js/package.json", b"{}\n");
+    fixture.file("ordinary-js/.nx/personal", 1024);
+    fixture.file("unmarked/.nx/personal", 1024);
+    let scan = fixture.scan();
+    let detection = detection_for(&scan, "nx-app/.nx").expect("Nx cache");
+    assert_eq!(detection.reason, "Nx task cache");
+    assert_eq!(detection.category, Category::Cache);
+    assert_eq!(detection.cleanup, CleanupSafety::Safe);
+    assert_eq!(detection.confidence, Confidence::High);
+    for path in ["ordinary-js/.nx", "unmarked/.nx"] {
+        if let Some(decoy) = detection_for(&scan, path) {
+            assert_ne!(decoy.reason, "Nx task cache");
+            assert_ne!(decoy.cleanup, CleanupSafety::Safe);
+        }
+    }
+}

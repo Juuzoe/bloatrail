@@ -89,6 +89,7 @@ static FRAMEWORK_TRIGGERS: &[Trigger] = &[
     Trigger::Name(".next"),
     Trigger::Name(".nuxt"),
     Trigger::Name(".turbo"),
+    Trigger::Name(".nx"),
     Trigger::Name(".parcel-cache"),
     Trigger::Name(".svelte-kit"),
     Trigger::Name(".astro"),
@@ -116,6 +117,27 @@ impl Detector for JsFrameworkCache {
 
         let (label, command, tech): (&'static str, &'static str, Technology) = match ctx.name_lower
         {
+            ".nx" => {
+                if !ctx.parent_is_project(Markers::NX_JSON) {
+                    return None;
+                }
+                return Some(
+                    Detection::new(
+                        Category::Cache,
+                        Confidence::High,
+                        CleanupSafety::Safe,
+                        "Nx task cache",
+                    )
+                    .with_technology(Technology::Node)
+                    .with_evidence("An `nx.json` file exists in the parent directory.")
+                    .with_evidence(
+                        "Nx stores task results and workspace data here; `nx reset` clears it.",
+                    )
+                    .regenerated_by("Re-run the Nx tasks")
+                    .collapsed()
+                    .with_specificity(SPEC_CONTEXT),
+                );
+            }
             ".next" => ("Next.js build cache", "next build", Technology::Node),
             ".nuxt" => ("Nuxt build cache", "nuxt build", Technology::Node),
             ".turbo" => ("Turborepo cache", "turbo run build", Technology::Node),

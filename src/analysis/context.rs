@@ -121,6 +121,8 @@ bitflags! {
         const DOTNET_PROPS     = 1 << 46;
         /// `build.zig` / `build.zig.zon`
         const BUILD_ZIG        = 1 << 48;
+        /// `nx.json`
+        const NX_JSON          = 1 << 51;
         /// `wrangler.toml` / `wrangler.json(c)` (Cloudflare Workers)
         const WRANGLER         = 1 << 49;
     }
@@ -221,6 +223,7 @@ impl Markers {
             "Cargo.toml" => *self |= Markers::CARGO_TOML,
             "Cargo.lock" => *self |= Markers::CARGO_LOCK,
             "package.json" => *self |= Markers::PACKAGE_JSON,
+            "nx.json" => *self |= Markers::NX_JSON,
             "package-lock.json" | "npm-shrinkwrap.json" => *self |= Markers::NPM_LOCK,
             "pnpm-lock.yaml" | "pnpm-workspace.yaml" => *self |= Markers::PNPM_LOCK,
             "yarn.lock" => *self |= Markers::YARN_LOCK,
