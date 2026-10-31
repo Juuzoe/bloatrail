@@ -35,11 +35,19 @@ jobs:
             archive: tar.gz
             packages: musl-tools
             native: true
-          - os: ubuntu-latest
+          # ARM Linux builds on an ARM runner, so both builds are native and
+          # get the same "does it run" check as x86 instead of a cross linker.
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
-            packages: gcc-aarch64-linux-gnu
-            linker: aarch64-linux-gnu-gcc
+            native: true
+          # The static build is what the install script prefers on ARM too:
+          # Alpine on a Raspberry Pi or a Graviton container has no glibc.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            archive: tar.gz
+            packages: musl-tools
+            native: true
           - os: macos-latest
             target: x86_64-apple-darwin
             archive: tar.gz
@@ -70,17 +78,11 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Install cross-compilation packages
+      - name: Install build packages
         if: matrix.packages
         run: |
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.packages }}
-
-      - name: Point Cargo at the cross linker
-        if: matrix.linker
-        run: |
-          target=$(echo '${{ matrix.target }}' | tr '[:lower:]-' '[:upper:]_')
-          echo "CARGO_TARGET_${target}_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
 
       - name: Build the CLI
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -130,7 +132,7 @@ jobs:
           "ASSET=$staging.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # Only where the runner can execute what it just built. The macOS x86
-      # and both ARM cross builds have no interpreter here, so they are
+      # and Windows ARM cross builds have no interpreter here, so they are
       # verified by the compiler and the archive contents alone. The binary is
       # invoked directly rather than through `cargo run`, which would rebuild
       # it without the `gui` feature and defeat the point.

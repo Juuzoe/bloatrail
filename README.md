@@ -355,12 +355,14 @@ follows is everything else.
 | Mac with Apple silicon (M1 and later) | `aarch64-apple-darwin.tar.gz` |
 | Mac with an Intel processor | `x86_64-apple-darwin.tar.gz` |
 | Linux, ordinary PC | `x86_64-unknown-linux-musl.tar.gz` |
-| Linux on ARM (Raspberry Pi 4 and 5, ARM servers) | `aarch64-unknown-linux-gnu.tar.gz` |
+| Linux on ARM (Raspberry Pi 4 and 5, ARM servers) | `aarch64-unknown-linux-musl.tar.gz` |
 
-The Linux x86 build is statically linked against musl, so it runs on any
-distribution whatever its glibc version, and the install script picks it.
-`x86_64-unknown-linux-gnu` is published alongside it for anyone who would
-rather link against the system glibc. The Windows and macOS archives carry the
+Both Linux builds are statically linked against musl, so they run on any
+distribution whatever its glibc version, Alpine included, and the install
+script picks them. `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`
+are published alongside for anyone who would rather link against the system
+glibc. Releases before 0.4.0 have no static ARM build; the install script
+falls back to the glibc one for those. The Windows and macOS archives carry the
 desktop app next to the CLI; the Linux archives do not, for the reason in
 [From source](#from-source) below.
 

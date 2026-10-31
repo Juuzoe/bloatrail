@@ -19,6 +19,21 @@ categories = ["command-line-utilities", "filesystem"]
 # declared bench targets with a warning.
 exclude = ["/.github", "/docs"]
 
+# `cargo binstall bloatrail` downloads the release archive instead of
+# compiling. The names match what release-build.yml packages.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.tar.gz"
+bin-dir = "{ name }-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.zip"
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.zip"
+pkg-fmt = "zip"
+
 [lib]
 name = "bloatrail"
 path = "src/lib.rs"

@@ -124,6 +124,23 @@ removed.
 - `growth` hides changes smaller than a thousandth of the biggest mover behind
   a counted "… and N smaller changes" line rather than listing them.
 
+### Platforms
+
+- A static ARM64 Linux build (`aarch64-unknown-linux-musl`), built and run on
+  an ARM runner, and preferred by the install script, so Alpine on a
+  Raspberry Pi or a Graviton container no longer needs glibc. Asking an older
+  release for it falls back to the glibc build. Both ARM Linux builds are now
+  native rather than cross-compiled, so each gets the same "does it run"
+  check as x86.
+- CI runs the test suite on ARM64 Linux as well as x86 Linux, macOS and
+  Windows.
+- The install scripts read the newest tag from the `releases/latest`
+  redirect instead of the REST API, which answers 403 once a shared address
+  (an office NAT, a pool of CI runners) has spent its 60 anonymous requests an
+  hour. The API remains as the fallback.
+- `cargo binstall bloatrail` fetches the prebuilt archive instead of
+  compiling, once the crate is on crates.io.
+
 ### Documentation and CI
 
 - `docs/demo/` builds the synthetic tree behind every screenshot, with VHS

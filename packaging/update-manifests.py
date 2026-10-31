@@ -44,6 +44,17 @@ def archive(version: str, target: str, extension: str) -> str:
     return f"bloatrail-{version}-{target}.{extension}"
 
 
+def arm_linux_archive(version: str, sums: dict[str, str]) -> str:
+    """The ARM Linux archive: static musl where the release has one.
+
+    Releases before 0.4.0 published only the glibc build for ARM.
+    """
+    musl = archive(version, "aarch64-unknown-linux-musl", "tar.gz")
+    if musl in sums:
+        return musl
+    return archive(version, "aarch64-unknown-linux-gnu", "tar.gz")
+
+
 def url_for(version: str, name: str) -> str:
     return f"https://github.com/{REPO}/releases/download/{version}/{name}"
 
@@ -117,7 +128,7 @@ def write_homebrew(version: str, sums: dict[str, str]) -> Path:
     arm_mac = archive(version, "aarch64-apple-darwin", "tar.gz")
     x64_mac = archive(version, "x86_64-apple-darwin", "tar.gz")
     x64_linux = archive(version, "x86_64-unknown-linux-musl", "tar.gz")
-    arm_linux = archive(version, "aarch64-unknown-linux-gnu", "tar.gz")
+    arm_linux = arm_linux_archive(version, sums)
 
     formula = f'''# Homebrew formula for Bloatrail.
 #
@@ -175,7 +186,7 @@ end
 def write_pkgbuild(version: str, sums: dict[str, str]) -> Path:
     number = version.lstrip("v")
     x64 = archive(version, "x86_64-unknown-linux-musl", "tar.gz")
-    arm = archive(version, "aarch64-unknown-linux-gnu", "tar.gz")
+    arm = arm_linux_archive(version, sums)
 
     pkgbuild = f"""# Maintainer: Maksym Gavrylenko <mgavrylenko05@gmail.com>
 pkgname=bloatrail-bin
@@ -199,7 +210,7 @@ package() {{
     # with `set -e` and a false test is a non-zero exit.
     local dir
     if [ "$CARCH" = "aarch64" ]; then
-        dir="bloatrail-{version}-aarch64-unknown-linux-gnu"
+        dir="{arm.removesuffix('.tar.gz')}"
     else
         dir="bloatrail-{version}-x86_64-unknown-linux-musl"
     fi

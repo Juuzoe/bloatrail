@@ -40,17 +40,21 @@ detect_target() {
             echo "${arch}-apple-darwin"
             ;;
         Linux)
-            # The musl build is static and runs anywhere, so it is the default
-            # on x86. No musl build is published for ARM yet, so ARM uses glibc.
-            if [ "$arch" = "x86_64" ]; then
-                echo "x86_64-unknown-linux-musl"
-            else
-                echo "aarch64-unknown-linux-gnu"
-            fi
+            # The musl build is static and runs anywhere, glibc or not, so it
+            # is the default on both architectures.
+            echo "${arch}-unknown-linux-musl"
             ;;
         *)
             die "unsupported system: $os. Build from source with: cargo install --git https://github.com/$REPO"
             ;;
+    esac
+}
+
+# Releases before 0.4.0 published no static ARM build, so asking one of them
+# for it falls back to the glibc build rather than failing.
+fallback_target() {
+    case "$1" in
+        aarch64-unknown-linux-musl) echo "aarch64-unknown-linux-gnu" ;;
     esac
 }
 
@@ -185,9 +189,18 @@ main() {
     trap 'rm -rf "$tmp"; exit 143' TERM
 
     info "Downloading $BIN $version for $target"
-    curl -fsSL "$url" -o "$tmp/$archive" ||
-        die "could not download $url
+    if ! curl -fsSL "$url" -o "$tmp/$archive" 2>/dev/null; then
+        fallback=$(fallback_target "$target")
+        [ -n "$fallback" ] || die "could not download $url
 Check https://github.com/$REPO/releases for the available builds."
+        info "$version has no $target build; trying $fallback"
+        target=$fallback
+        archive="$BIN-$version-$target.tar.gz"
+        url="https://github.com/$REPO/releases/download/$version/$archive"
+        curl -fsSL "$url" -o "$tmp/$archive" ||
+            die "could not download $url
+Check https://github.com/$REPO/releases for the available builds."
+    fi
 
     curl -fsSL "https://github.com/$REPO/releases/download/$version/SHA256SUMS" \
         -o "$tmp/SHA256SUMS" 2>/dev/null || true
