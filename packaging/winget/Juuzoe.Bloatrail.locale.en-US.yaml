@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
 PackageIdentifier: Juuzoe.Bloatrail
-PackageVersion: 0.3.0
+PackageVersion: 0.4.0
 PackageLocale: en-US
 Publisher: Maksym Gavrylenko
 PublisherUrl: https://github.com/Juuzoe
@@ -22,6 +22,6 @@ Tags:
   - disk-space
   - disk-usage
   - rust
-ReleaseNotesUrl: https://github.com/Juuzoe/bloatrail/releases/tag/v0.3.0
+ReleaseNotesUrl: https://github.com/Juuzoe/bloatrail/releases/tag/v0.4.0
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

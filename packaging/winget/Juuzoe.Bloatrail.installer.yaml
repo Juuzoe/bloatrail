@@ -1,24 +1,24 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 PackageIdentifier: Juuzoe.Bloatrail
-PackageVersion: 0.3.0
+PackageVersion: 0.4.0
 InstallerType: zip
 NestedInstallerType: portable
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/Juuzoe/bloatrail/releases/download/v0.3.0/bloatrail-v0.3.0-x86_64-pc-windows-msvc.zip
-    InstallerSha256: A9B154A55A707CC7797E658EC373CDDC344645D13DD9086C143DA51F0DD0C5FC
+    InstallerUrl: https://github.com/Juuzoe/bloatrail/releases/download/v0.4.0/bloatrail-v0.4.0-x86_64-pc-windows-msvc.zip
+    InstallerSha256: 0CE9924D1E5DF3DA54989E0FFBC74E89B6213E0D96C6C44E101D79CA29A2C7C8
     NestedInstallerFiles:
-      - RelativeFilePath: bloatrail-v0.3.0-x86_64-pc-windows-msvc\bloatrail.exe
+      - RelativeFilePath: bloatrail-v0.4.0-x86_64-pc-windows-msvc\bloatrail.exe
         PortableCommandAlias: bloatrail
-      - RelativeFilePath: bloatrail-v0.3.0-x86_64-pc-windows-msvc\bloatrail-gui.exe
+      - RelativeFilePath: bloatrail-v0.4.0-x86_64-pc-windows-msvc\bloatrail-gui.exe
         PortableCommandAlias: bloatrail-gui
   - Architecture: arm64
-    InstallerUrl: https://github.com/Juuzoe/bloatrail/releases/download/v0.3.0/bloatrail-v0.3.0-aarch64-pc-windows-msvc.zip
-    InstallerSha256: B788382A9C521572FE01D339C5B5F920F06162C623AC88CE33C144543D1F31E2
+    InstallerUrl: https://github.com/Juuzoe/bloatrail/releases/download/v0.4.0/bloatrail-v0.4.0-aarch64-pc-windows-msvc.zip
+    InstallerSha256: 0967659F6DE2DB4CED9783B64FCFCB22E5F2008A93C371242FEE3976CE088A67
     NestedInstallerFiles:
-      - RelativeFilePath: bloatrail-v0.3.0-aarch64-pc-windows-msvc\bloatrail.exe
+      - RelativeFilePath: bloatrail-v0.4.0-aarch64-pc-windows-msvc\bloatrail.exe
         PortableCommandAlias: bloatrail
-      - RelativeFilePath: bloatrail-v0.3.0-aarch64-pc-windows-msvc\bloatrail-gui.exe
+      - RelativeFilePath: bloatrail-v0.4.0-aarch64-pc-windows-msvc\bloatrail-gui.exe
         PortableCommandAlias: bloatrail-gui
 ManifestType: installer
 ManifestVersion: 1.6.0

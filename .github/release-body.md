@@ -15,7 +15,7 @@ irm https://raw.githubusercontent.com/Juuzoe/bloatrail/main/install.ps1 | iex
 **From source**
 
 ```sh
-cargo install --git https://github.com/Juuzoe/bloatrail --locked
+cargo install bloatrail --locked
 ```
 
 Or download an archive below and put `bloatrail` on your `PATH`.
@@ -37,7 +37,7 @@ glibc.
 The Windows and macOS archives contain the desktop app alongside the CLI. On
 Linux it needs a matching GTK and X11 at runtime, which no single archive can
 promise across distributions, so build it with
-`cargo install --git https://github.com/Juuzoe/bloatrail --locked --features gui`.
+`cargo install bloatrail --locked --features gui`.
 
 `SHA256SUMS` covers every archive, including the Windows ones:
 

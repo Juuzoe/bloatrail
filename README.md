@@ -4,6 +4,7 @@
 
 [![CI](https://github.com/Juuzoe/bloatrail/actions/workflows/ci.yml/badge.svg)](https://github.com/Juuzoe/bloatrail/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Juuzoe/bloatrail?sort=semver)](https://github.com/Juuzoe/bloatrail/releases/latest)
+[![crates.io](https://img.shields.io/crates/v/bloatrail.svg)](https://crates.io/crates/bloatrail)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Juuzoe/bloatrail/blob/main/LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 
@@ -43,10 +44,11 @@ irm https://raw.githubusercontent.com/Juuzoe/bloatrail/main/install.ps1 | iex
 scoop install https://raw.githubusercontent.com/Juuzoe/bloatrail/main/packaging/scoop/bloatrail.json
 ```
 
-**From source**
+**Cargo**
 
 ```sh
-cargo install --git https://github.com/Juuzoe/bloatrail --locked
+cargo install bloatrail --locked      # builds from crates.io
+cargo binstall bloatrail              # downloads the release archive instead
 ```
 
 Or take an archive from the [latest release](https://github.com/Juuzoe/bloatrail/releases/latest):
@@ -405,7 +407,7 @@ prebuilt binary would need a matching GTK and X11 at runtime and no single
 archive can promise that across distributions:
 
 ```bash
-cargo install --git https://github.com/Juuzoe/bloatrail --locked --features gui
+cargo install bloatrail --locked --features gui
 ```
 
 ---
