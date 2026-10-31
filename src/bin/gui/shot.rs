@@ -29,6 +29,7 @@ enum Stage {
     OpenConfirm,
     CloseConfirm,
     PrepareLargest,
+    PrepareGrowth,
     Close,
     Done,
 }
@@ -80,6 +81,11 @@ impl ShotDriver {
                 Stage::PrepareLargest,
                 Stage::Settle(8),
                 Stage::Request("largest"),
+                // Shows whatever history the store holds for the scanned
+                // folder; `docs/demo/seed-history.py` gives a fixture a past.
+                Stage::PrepareGrowth,
+                Stage::Settle(8),
+                Stage::Request("growth"),
             ]);
         }
         queue.push(Stage::Close);
@@ -237,6 +243,10 @@ impl App {
             }
             Stage::PrepareLargest => {
                 self.view = View::Largest;
+                driver.advance();
+            }
+            Stage::PrepareGrowth => {
+                self.view = View::Growth;
                 driver.advance();
             }
             Stage::Close => {

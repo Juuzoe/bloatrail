@@ -117,6 +117,25 @@ impl Snapshot {
         }
     }
 
+    /// The snapshot recorded for a completed scan.
+    ///
+    /// Every frontend that records history builds its snapshot here — the
+    /// CLI's `scan`, `diff` and `growth`, and the desktop app — so a snapshot
+    /// cannot depend on which of them wrote it: the same top-directory count,
+    /// the same volume figures, and the same recoverable estimate `clean`
+    /// would report. `stale_days` must be the threshold the scan ran with,
+    /// because it decides which age-limited sweeps count as recoverable.
+    ///
+    /// This only builds the snapshot; [`save`] writes it.
+    #[must_use]
+    pub fn capture(scan: &ScanResult, stale_days: u32) -> Self {
+        let reclaimable = crate::cleanup::CleanupPlan::from_scan_with(scan, stale_days)
+            .recoverable()
+            .0;
+        Snapshot::from_scan(scan, LARGEST_TRACKED)
+            .with_environment(crate::platform::disk_usage(&scan.root), reclaimable)
+    }
+
     /// Attach the figures that describe the machine around the scan: the
     /// volume's capacity and free space, and what Bloatrail judged recoverable.
     ///
@@ -303,6 +322,32 @@ fn compare_pairs(previous: &[(String, u64)], current: &[(String, u64)]) -> Vec<C
                 delta,
             })
         })
+        .collect()
+}
+
+/// How many rows of a change list a report lists before counting the rest.
+pub const REPORTED_CHANGES: usize = 10;
+
+/// The rows of a ranked change list worth a line of their own, at most
+/// `limit` of them.
+///
+/// The floor is a thousandth of the biggest mover: a +79 B lockfile under a
+/// +75 MB build tree is real but not reportable at this altitude, while a
+/// small tree whose biggest change is a few kilobytes still shows everything.
+/// Every frontend filters through here so they list the same rows, and each
+/// says how many it left out rather than hiding them silently.
+#[must_use]
+pub fn reportable(changes: &[Change], limit: usize) -> Vec<&Change> {
+    let floor = changes
+        .iter()
+        .map(|change| change.delta.abs())
+        .max()
+        .unwrap_or(0)
+        / 1_000;
+    changes
+        .iter()
+        .filter(|change| change.delta.abs() > floor)
+        .take(limit)
         .collect()
 }
 
@@ -1156,5 +1201,78 @@ mod tests {
         let full = snapshot(1, 10, &[], &[]).with_environment(Some(disk), 7);
         assert_eq!(full.disk_total, Some(100));
         assert_eq!(full.disk_available, Some(40));
+    }
+
+    /// Scan a real temporary tree: a Rust project with build output, plus
+    /// more sibling directories than a snapshot tracks.
+    fn scanned_tree() -> (tempfile::TempDir, ScanResult) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("api/src")).unwrap();
+        std::fs::create_dir_all(root.join("api/target/debug")).unwrap();
+        std::fs::write(root.join("api/Cargo.toml"), b"[package]\nname = \"p\"\n").unwrap();
+        std::fs::write(root.join("api/Cargo.lock"), b"# lock\n").unwrap();
+        std::fs::write(root.join("api/src/main.rs"), [b'x'; 256]).unwrap();
+        std::fs::write(root.join("api/target/debug/app"), vec![b'x'; 64 * 1024]).unwrap();
+        for i in 0..LARGEST_TRACKED + 5 {
+            let folder = root.join(format!("notes-{i:02}"));
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("a.txt"), vec![b'x'; 100 + i]).unwrap();
+        }
+
+        let options = crate::scanner::ScanOptions::new(root);
+        let scan = crate::scanner::scan(
+            &options,
+            &crate::analysis::Classifier::with_default_detectors(),
+            &crate::platform::KnownPaths::empty(),
+        )
+        .expect("scan");
+        (dir, scan)
+    }
+
+    #[test]
+    fn capture_records_the_scan_and_the_machine_around_it() {
+        let (_dir, scan) = scanned_tree();
+        let stale_days = crate::scanner::DEFAULT_STALE_DAYS;
+        let captured = Snapshot::capture(&scan, stale_days);
+
+        assert_eq!(captured.root, scan.root);
+        assert_eq!(captured.bytes, scan.totals.bytes);
+        assert_eq!(captured.files, scan.totals.files);
+        assert_eq!(captured.dirs, scan.totals.dirs);
+
+        // The top-N list is exactly what comparison assumes it is: a full
+        // list is a truncated one, which is how absence gets its bound.
+        assert_eq!(captured.largest.len(), LARGEST_TRACKED);
+        assert_eq!(
+            captured.largest,
+            Snapshot::from_scan(&scan, LARGEST_TRACKED).largest
+        );
+
+        // The recoverable figure is the one `clean` would report for this
+        // scan, and the build output makes it more than nothing.
+        let plan = crate::cleanup::CleanupPlan::from_scan_with(&scan, stale_days);
+        assert_eq!(captured.reclaimable, Some(plan.recoverable().0));
+        assert!(captured.reclaimable.unwrap_or(0) >= 64 * 1024);
+
+        // Volume figures are recorded wherever the platform can report them.
+        let disk = crate::platform::disk_usage(&scan.root);
+        assert_eq!(captured.disk_total.is_some(), disk.is_some());
+        assert_eq!(captured.disk_available.is_some(), disk.is_some());
+    }
+
+    #[test]
+    fn reportable_rows_skip_noise_and_respect_the_limit() {
+        let mut rows = changes(&[("target", 75 << 20), ("Cargo.lock", 79)]);
+        assert_eq!(labels_of(&reportable(&rows, 10)), vec!["target"]);
+
+        rows = changes(&[("a", 900), ("b", -800), ("c", 700), ("d", 600)]);
+        assert_eq!(labels_of(&reportable(&rows, 2)), vec!["a", "b"]);
+
+        assert!(reportable(&[], 10).is_empty());
+    }
+
+    fn labels_of<'a>(rows: &[&'a Change]) -> Vec<&'a str> {
+        rows.iter().map(|change| change.label.as_str()).collect()
     }
 }

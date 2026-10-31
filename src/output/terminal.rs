@@ -1193,24 +1193,11 @@ impl ReportableChanges<'_> {
     }
 }
 
-/// Filter a ranked change list down to the rows worth a line.
-///
-/// The floor is a thousandth of the biggest mover: a +79 B lockfile under a
-/// +75 MB build tree is real but not reportable at this altitude, while a
-/// small tree whose biggest change is a few kilobytes still shows everything.
-/// Nothing is hidden silently — the caller prints the count.
+/// Filter a ranked change list down to the rows worth a line, by the rule in
+/// [`crate::history::reportable`]. Nothing is hidden silently — the caller
+/// prints the count.
 fn reportable(changes: &[crate::history::Change]) -> ReportableChanges<'_> {
-    let floor = changes
-        .iter()
-        .map(|change| change.delta.abs())
-        .max()
-        .unwrap_or(0)
-        / 1_000;
-    let shown: Vec<&crate::history::Change> = changes
-        .iter()
-        .filter(|change| change.delta.abs() > floor)
-        .take(10)
-        .collect();
+    let shown = crate::history::reportable(changes, crate::history::REPORTED_CHANGES);
     ReportableChanges {
         hidden: changes.len() - shown.len(),
         shown,

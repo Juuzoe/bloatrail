@@ -76,3 +76,14 @@ BLOATRAIL_SHOT_DIR=docs/screenshots BLOATRAIL_SHOT_SCAN=~/Projects \
 
 It walks every view, captures a PNG of each, and exits. The harness sits behind
 its own feature so the shipped app carries no PNG encoder.
+
+Like `bloatrail scan`, the app records each finished scan in the history the
+Growth view reads. To capture that view with a past, seed the history first and
+keep it out of your real store:
+
+```bash
+export BLOATRAIL_HOME=$(mktemp -d)
+python docs/demo/seed-history.py ~/Projects
+BLOATRAIL_SHOT_DIR=docs/screenshots BLOATRAIL_SHOT_SCAN=~/Projects \
+  ./target/release/bloatrail-gui
+```
