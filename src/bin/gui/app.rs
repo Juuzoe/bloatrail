@@ -1,9 +1,9 @@
 //! Application state and background work.
 //!
-//! The UI thread never scans and never deletes. Both run on worker threads
-//! that report back over a channel; the frame loop polls the channel and the
-//! scan's shared counters. Cancellation uses the same [`CancelToken`] the CLI
-//! wires to Ctrl+C.
+//! The UI thread never scans, never deletes and never touches the scan
+//! history. All three run on worker threads that report back over a channel;
+//! the frame loop polls the channel and the scan's shared counters.
+//! Cancellation uses the same [`CancelToken`] the CLI wires to Ctrl+C.
 
 use eframe::egui;
 use std::collections::HashSet;
@@ -15,6 +15,7 @@ use bloatrail::analysis::Classifier;
 use bloatrail::analysis::CleanupSafety;
 use bloatrail::cleanup::executor::{ExecutionOptions, ExecutionReport, Executor};
 use bloatrail::cleanup::planner::{CleanupGroup, CleanupPlan};
+use bloatrail::history::{self, Growth, Snapshot};
 use bloatrail::pattern::ExcludeSet;
 use bloatrail::platform::KnownPaths;
 use bloatrail::scanner::progress::Counters;
@@ -30,6 +31,8 @@ pub enum View {
     Cleanup,
     /// Largest files and directories.
     Largest,
+    /// Every recorded scan of the folder, what grew, and the volume's trend.
+    Growth,
 }
 
 /// Ranked list shown in the Largest view.
@@ -49,6 +52,9 @@ pub struct Bundle {
     pub plan: CleanupPlan,
     /// Well-known locations, used to abbreviate paths for display.
     pub known: KnownPaths,
+    /// The recorded series for this folder, ending with this scan unless it
+    /// was stopped early. `None` when nothing has been recorded at all.
+    pub growth: Option<Growth>,
 }
 
 /// Messages from worker threads.
@@ -251,7 +257,13 @@ impl App {
             let result = scanner::scan_with_progress(&options, &classifier, &known, counters)
                 .map(|scan| {
                     let plan = CleanupPlan::from_scan(&scan);
-                    Bundle { scan, plan, known }
+                    let growth = record_history(&scan);
+                    Bundle {
+                        scan,
+                        plan,
+                        known,
+                        growth,
+                    }
                 })
                 .map_err(|error| error.to_string());
             notice.disarm();
@@ -404,6 +416,28 @@ impl App {
             }
         }
     }
+}
+
+/// Record a finished scan and read back the series it joins.
+///
+/// Runs on the scan worker, so the history files are read and written off the
+/// UI thread. The snapshot is built by the same library function the CLI
+/// records through, with the default stale-days threshold the app's scans
+/// run with. Recording is best-effort, as in `bloatrail scan`: a read-only
+/// data directory costs the history, never the scan.
+///
+/// A scan stopped early is not recorded — its partial totals would read as
+/// shrinkage against the last full scan — so the series is then the record as
+/// it stood. Otherwise the series ends with this scan whether or not the save
+/// succeeded, the way `bloatrail growth` ends with its fresh scan.
+fn record_history(scan: &ScanResult) -> Option<Growth> {
+    let mut snapshots = history::load_all(&scan.root).unwrap_or_default();
+    if !scan.cancelled {
+        let snapshot = Snapshot::capture(scan, scanner::DEFAULT_STALE_DAYS);
+        let _ = history::save(&snapshot);
+        snapshots.push(snapshot);
+    }
+    history::growth(&snapshots)
 }
 
 /// One place for every style decision.

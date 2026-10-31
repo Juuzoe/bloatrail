@@ -267,17 +267,12 @@ impl Context {
 
     /// Summarise a completed scan for the history store.
     ///
-    /// Every command that records history builds its snapshot here, so a
-    /// snapshot written by `scan`, `diff` or `growth` cannot disagree about
-    /// what gets recorded: the same top-directory count, the same volume
-    /// figures, and the same recoverable estimate `clean` would report.
+    /// A thin wrapper over [`crate::history::Snapshot::capture`], which the
+    /// desktop app records through as well, with the configured stale-days
+    /// threshold the scan ran with.
     #[must_use]
     pub fn snapshot(&self, scan: &ScanResult) -> crate::history::Snapshot {
-        let reclaimable =
-            crate::cleanup::CleanupPlan::from_scan_with(scan, self.settings.stale_days)
-                .recoverable();
-        crate::history::Snapshot::from_scan(scan, 25)
-            .with_environment(crate::platform::disk_usage(&scan.root), reclaimable.0)
+        crate::history::Snapshot::capture(scan, self.settings.stale_days)
     }
 
     /// Run a scan with the shared classifier and location registry.

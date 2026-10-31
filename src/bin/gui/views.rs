@@ -9,7 +9,9 @@
 use std::sync::Arc;
 
 use bloatrail::analysis::domain::{CleanupSafety, Detection};
+use bloatrail::history::{self, Growth, Projection};
 use bloatrail::scanner::tree::NodeId;
+use bloatrail::timefmt;
 use bloatrail::units::{format_count, ByteSize};
 use eframe::egui;
 use eframe::egui::{Align, Align2, Color32, Layout, RichText, Sense};
@@ -145,6 +147,7 @@ impl eframe::App for App {
                     View::Overview => overview(self, bundle, ui),
                     View::Cleanup => cleanup(self, bundle, ui, ctx),
                     View::Largest => largest(self, bundle, ui),
+                    View::Growth => growth(self, bundle, ui),
                 },
                 (None, false) => idle(self, ui),
             });
@@ -219,6 +222,7 @@ fn nav(app: &mut App, has_data: bool, ui: &mut egui::Ui) {
         (View::Overview, "Overview"),
         (View::Cleanup, "Cleanup"),
         (View::Largest, "Largest files"),
+        (View::Growth, "Growth"),
     ] {
         let enabled = has_data || view == View::Overview;
         let selected = app.view == view;
@@ -995,4 +999,386 @@ fn largest(app: &mut App, bundle: &Arc<Bundle>, ui: &mut egui::Ui) {
                 }
             }
         });
+}
+
+// ---------------------------------------------------------------------------
+// Growth
+//
+// Everything here renders what `history::growth` returned: the rate, the
+// projection and the attribution are the library's, and the wording follows
+// `bloatrail growth` so the two frontends say the same thing.
+// ---------------------------------------------------------------------------
+
+/// Room on the right of a series row for the free-space figure.
+const FREE_COLUMN: f32 = 130.0;
+
+fn growth(app: &mut App, bundle: &Arc<Bundle>, ui: &mut egui::Ui) {
+    let dark = ui.visuals().dark_mode;
+    let scan = &bundle.scan;
+    // Two points are the least that can be compared; fewer is the starting
+    // line, which every folder's first scan arrives at.
+    let series = bundle.growth.as_ref().filter(|g| g.points.len() >= 2);
+
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Growth").size(16.0));
+        if let Some(growth) = series {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(dim(ui, window_summary(growth)));
+            });
+        }
+    });
+    ui.label(dim(ui, bundle.known.display(&scan.root)));
+    if scan.cancelled {
+        ui.label(
+            RichText::new(
+                "Stopped early, so this scan was not recorded. This is the record as it stood.",
+            )
+            .color(safety_color(CleanupSafety::Review, dark)),
+        );
+    }
+    ui.add_space(4.0);
+    ui.separator();
+
+    let Some(growth) = series else {
+        starting_line(bundle.growth.as_ref(), ui);
+        return;
+    };
+
+    egui::ScrollArea::vertical()
+        .id_salt("growth")
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            series_rows(growth, ui);
+            change_rows(growth, bundle, ui);
+            volume_rows(growth, ui);
+            recoverable_row(app, growth, !scan.cancelled, ui);
+            ui.add_space(8.0);
+        });
+}
+
+/// "6 scans over 28 days, <first> to <last>". Below a minute the count stands
+/// alone: the timestamps beside it already say everything a span would.
+fn window_summary(growth: &Growth) -> String {
+    let count = match growth.span {
+        0..=59 => format!("{} scans", growth.points.len()),
+        span => format!(
+            "{} scans over {}",
+            growth.points.len(),
+            timefmt::humanize_span(span)
+        ),
+    };
+    format!(
+        "{count}, {} to {}",
+        timefmt::format_timestamp(growth.points[0].timestamp),
+        timefmt::format_timestamp(growth.points[growth.points.len() - 1].timestamp)
+    )
+}
+
+/// Nothing to compare yet: say what was recorded and how growth begins.
+fn starting_line(growth: Option<&Growth>, ui: &mut egui::Ui) {
+    ui.add_space(ui.available_height() * 0.3);
+    ui.vertical_centered(|ui| {
+        match growth.and_then(|g| g.points.first()) {
+            Some(point) => {
+                ui.label(RichText::new("First scan recorded").size(16.0));
+                ui.add_space(4.0);
+                ui.label(mono(format!(
+                    "{} on {}",
+                    ByteSize(point.bytes),
+                    timefmt::format_date(point.timestamp)
+                )));
+            }
+            None => {
+                ui.label(RichText::new("No scans recorded").size(16.0));
+            }
+        }
+        ui.add_space(4.0);
+        ui.label(dim(
+            ui,
+            "Growth is measured between scans. The next scan of this folder adds a \
+             point; after a day, a week or a build, this view shows what changed and \
+             how fast the volume is filling.",
+        ));
+    });
+}
+
+/// One row per recorded scan: when, a proportion bar, the size, and the
+/// volume's free space at the time when the snapshot recorded it.
+fn series_rows(growth: &Growth, ui: &mut egui::Ui) {
+    let dark = ui.visuals().dark_mode;
+    // The time of day only when the whole window fits inside two days, where
+    // the date alone would repeat itself down the column.
+    let close_together = growth.span < 2 * 86_400;
+    let max_bytes = growth.points.iter().map(|p| p.bytes).max().unwrap_or(0);
+    let free_column = if growth.points.iter().any(|p| p.disk_available.is_some()) {
+        FREE_COLUMN
+    } else {
+        0.0
+    };
+
+    ui.add_space(6.0);
+    for point in &growth.points {
+        let when = if close_together {
+            timefmt::format_timestamp(point.timestamp)
+        } else {
+            timefmt::format_date(point.timestamp)
+        };
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 18.0),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(190.0, 16.0),
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        ui.label(mono(when));
+                    },
+                );
+                let bar_width = (ui.available_width() - 100.0 - free_column).max(60.0);
+                let fraction = ByteSize(point.bytes).fraction_of(ByteSize(max_bytes));
+                draw_bar(ui, fraction as f32, bar_width, bar_color(dark));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if free_column > 0.0 {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(free_column, 16.0),
+                            Layout::right_to_left(Align::Center),
+                            |ui| {
+                                if let Some(available) = point.disk_available {
+                                    ui.label(
+                                        dim(ui, format!("{} free", ByteSize(available)))
+                                            .monospace(),
+                                    );
+                                }
+                            },
+                        );
+                    }
+                    ui.label(mono(ByteSize(point.bytes).to_string()));
+                });
+            },
+        );
+    }
+}
+
+/// What grew between the first and the last point, by category and by
+/// directory, then the net change.
+fn change_rows(growth: &Growth, bundle: &Bundle, ui: &mut egui::Ui) {
+    let dark = ui.visuals().dark_mode;
+    let scan = &bundle.scan;
+
+    ui.add_space(8.0);
+    ui.separator();
+    if growth.categories.is_empty() && growth.directories.is_empty() {
+        ui.label(dim(ui, "Nothing changed across this window."));
+        return;
+    }
+
+    let categories = history::reportable(&growth.categories, history::REPORTED_CHANGES);
+    if !categories.is_empty() {
+        section_heading(ui, "Where it went");
+        for change in &categories {
+            change_row(ui, RichText::new(change.label.as_str()), change.delta, None);
+        }
+        hidden_note(ui, growth.categories.len() - categories.len());
+    }
+
+    let directories = history::reportable(&growth.directories, history::REPORTED_CHANGES);
+    if !directories.is_empty() {
+        section_heading(ui, "By directory");
+        for change in &directories {
+            // What a grown directory is, from the scan on screen. Only growth
+            // is annotated, as in the CLI: the question is what to do about it.
+            let detection = (change.delta > 0)
+                .then(|| scan.tree.find(&scan.root.join(&change.label)))
+                .flatten()
+                .and_then(|id| scan.tree.node(id).detection.as_ref());
+            let note = detection.map(|detection| {
+                RichText::new(detection.reason.as_ref())
+                    .color(safety_color(detection.cleanup, dark))
+                    .small()
+            });
+            let label = mono(bloatrail::output::elide_start(&change.label, 64)).small();
+            change_row(ui, label, change.delta, note);
+        }
+        hidden_note(ui, growth.directories.len() - directories.len());
+    }
+
+    ui.add_space(4.0);
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 18.0),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.label("Net change");
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add_space(4.0);
+                ui.label(mono(signed(growth.net)));
+            });
+        },
+    );
+}
+
+fn section_heading(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(6.0);
+    ui.label(RichText::new(text).strong());
+}
+
+/// A change line: label on the left, the signed change at the right edge, and
+/// an optional note beside it. The compact height of the Overview's category
+/// rows, since these are a report rather than a list to click through.
+fn change_row(ui: &mut egui::Ui, label: RichText, delta: i64, note: Option<RichText>) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 18.0),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.add_space(8.0);
+            ui.label(label);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add_space(4.0);
+                ui.label(mono(signed(delta)));
+                if let Some(note) = note {
+                    ui.add_space(8.0);
+                    ui.label(note);
+                }
+            });
+        },
+    );
+}
+
+/// Account for the rows below the noise floor or past the row limit.
+fn hidden_note(ui: &mut egui::Ui, hidden: usize) {
+    if hidden > 0 {
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(dim(
+                ui,
+                format!(
+                    "… and {hidden} smaller change{}",
+                    if hidden == 1 { "" } else { "s" }
+                ),
+            ));
+        });
+    }
+}
+
+/// The volume's trajectory, exactly as far as the library would project it.
+fn volume_rows(growth: &Growth, ui: &mut egui::Ui) {
+    let Some(trend) = &growth.volume else {
+        // Snapshots from before free space was recorded cannot say anything
+        // about the volume. Say why, and that the record heals itself.
+        let with_disk = growth
+            .points
+            .iter()
+            .filter(|p| p.disk_available.is_some())
+            .count();
+        if with_disk <= 1 {
+            ui.add_space(8.0);
+            ui.separator();
+            ui.label(dim(
+                ui,
+                "Earlier scans did not record the volume's free space; the volume \
+                 trend starts with the scans recorded from now on.",
+            ));
+        }
+        return;
+    };
+
+    ui.add_space(8.0);
+    ui.separator();
+    section_heading(ui, "This volume");
+
+    let window = trend.last_timestamp.saturating_sub(trend.first_timestamp);
+    let from = ByteSize(trend.first_available);
+    let to = ByteSize(trend.last_available);
+
+    // Below the projection floor the only honest statement is the raw
+    // movement; a daily rate read off one afternoon would be invented.
+    if window < history::MIN_PROJECTION_SPAN {
+        let verb = match trend.rate_per_day {
+            0 => {
+                ui.label("Free space did not change across this window.");
+                return;
+            }
+            rate if rate > 0 => "grew",
+            _ => "fell",
+        };
+        ui.label(format!(
+            "Free space {verb} from {from} to {to} in {}.",
+            timefmt::humanize_span(window)
+        ));
+        ui.label(dim(
+            ui,
+            "Too short a window to read a daily trend from — scan again in a few days.",
+        ));
+        return;
+    }
+
+    let rate = ByteSize(trend.rate_per_day.unsigned_abs());
+    let span = timefmt::humanize_span(window);
+    ui.label(match trend.rate_per_day {
+        0 => "Free space did not change over this window.".to_string(),
+        rate_per_day if rate_per_day > 0 => format!(
+            "Free space grew from {from} to {to} — about {rate} a day, averaged over {span}."
+        ),
+        _ => format!(
+            "Free space fell from {from} to {to} — about {rate} a day, averaged over {span}."
+        ),
+    });
+
+    match trend.projection {
+        Projection::FullAround => {
+            if let Some(full_at) = trend.full_at {
+                let distance = full_at.saturating_sub(trend.last_timestamp);
+                ui.label(
+                    RichText::new(format!(
+                        "At that rate, this volume runs out around {} — about {} from \
+                         the last scan.",
+                        timefmt::format_date(full_at),
+                        timefmt::humanize_span(distance)
+                    ))
+                    .strong(),
+                );
+            }
+        }
+        Projection::MoreThanAYear => {
+            ui.label(dim(
+                ui,
+                "At that rate, running out is more than a year away.",
+            ));
+        }
+        // Not reachable past the floor above; a match that says so beats an
+        // `unreachable!` that trusts it.
+        Projection::WindowTooShort | Projection::NotShrinking => {}
+    }
+}
+
+/// The way out: the recoverable figure from the newest point, and where to
+/// act on it.
+fn recoverable_row(app: &mut App, growth: &Growth, ends_with_this_scan: bool, ui: &mut egui::Ui) {
+    let Some(bytes) = growth.reclaimable_now.filter(|bytes| *bytes > 0) else {
+        return;
+    };
+    ui.add_space(8.0);
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label(if ends_with_this_scan {
+            format!("Of what is here today, {} is recoverable.", ByteSize(bytes))
+        } else {
+            format!(
+                "The most recent recorded scan judged {} recoverable.",
+                ByteSize(bytes)
+            )
+        });
+        if ui.button("Open Cleanup").clicked() {
+            app.view = View::Cleanup;
+        }
+    });
+}
+
+fn signed(delta: i64) -> String {
+    let magnitude = ByteSize(delta.unsigned_abs());
+    if delta >= 0 {
+        format!("+{magnitude}")
+    } else {
+        format!("-{magnitude}")
+    }
 }

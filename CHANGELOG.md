@@ -44,6 +44,22 @@ guard against a real cleanup target and prints the verdict, so the explanation
 is the behaviour rather than a second account of it that can drift out of
 agreement.
 
+### Desktop app
+
+- A Growth view: every recorded scan of the folder with its size and the
+  volume's free space at the time, what grew between the first scan and the
+  last (each grown directory labelled with its classification from the current
+  scan), the volume's trend and projected date under the same rules as
+  `bloatrail growth`, and the recoverable amount with a way into Cleanup. A
+  folder with one recorded scan shows a starting line instead.
+- The app now records each finished scan in the scan history, as `bloatrail
+  scan` does, so its scans and the CLI's build one record. A scan stopped early
+  is not recorded. History is read and written on the scan worker, never the
+  UI thread.
+- Snapshots are built by one library function, `Snapshot::capture`, for the
+  CLI and the app alike, and both list the same changes above the same noise
+  floor.
+
 ### Cleanup safety
 
 Age-limited removal — the `Reclaim::OlderThan` path used for `logs/`, `tmp/`,
