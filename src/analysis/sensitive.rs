@@ -89,10 +89,14 @@ pub fn classify(name: &str) -> Option<Sensitivity> {
 }
 
 /// Whether a *directory* name is one whose contents are always protected.
+///
+/// Matched case-insensitively, like [`classify`]. Windows and macOS both use
+/// case-insensitive filesystems by default, so a `.SSH` created by a Windows
+/// tool is the same directory as `.ssh` and has to be given the same answer.
 #[must_use]
 pub fn is_protected_directory(name: &str) -> bool {
     matches!(
-        name,
+        name.to_ascii_lowercase().as_str(),
         ".ssh" | ".gnupg" | ".gpg" | ".aws" | ".kube" | ".azure" | ".docker" | ".password-store"
     )
 }
@@ -141,5 +145,14 @@ mod tests {
         assert!(is_protected_directory(".ssh"));
         assert!(is_protected_directory(".gnupg"));
         assert!(!is_protected_directory("src"));
+    }
+
+    #[test]
+    fn credential_directories_are_matched_case_insensitively() {
+        // The same directory on a case-insensitive filesystem, so the same
+        // answer. `classify` already lowercases; this used not to.
+        assert!(is_protected_directory(".SSH"));
+        assert!(is_protected_directory(".Aws"));
+        assert!(is_protected_directory(".Password-Store"));
     }
 }

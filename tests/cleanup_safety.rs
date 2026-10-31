@@ -35,6 +35,7 @@ fn executor<'a>(
             permanent: true,
             limit,
             excludes: bloatrail::pattern::ExcludeSet::default(),
+            include_hidden: false,
         },
     )
 }
@@ -484,4 +485,207 @@ fn relative_and_traversal_paths_are_refused() {
             path.display()
         );
     }
+}
+
+/// Backdate a file so an age-limited sweep considers it stale.
+fn make_old(path: &std::path::Path, days: u64) {
+    let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+    let file = std::fs::File::options()
+        .write(true)
+        .open(path)
+        .expect("open");
+    file.set_modified(when).expect("set mtime");
+}
+
+/// Build a `logs/` directory (a `Reclaim::OlderThan` target) that also holds
+/// things Bloatrail promises never to touch.
+fn aged_target_hiding_treasure(fixture: &Fixture) -> CleanupTarget {
+    // Old log files: genuinely what the group is for.
+    let log = fixture.file("logs/app.log", 4096);
+    make_old(&log, 200);
+
+    // A git checkout someone unpacked in there. The README states plainly that
+    // Bloatrail never removes `.git` directories.
+    let pack = fixture.file("logs/clone/.git/objects/pack/p.pack", 8192);
+    fixture.write("logs/clone/.git/HEAD", b"ref: refs/heads/main\n");
+    fixture.dir("logs/clone/.git/refs");
+    make_old(&pack, 300);
+
+    // Hand-written source inside a project that happens to live under the
+    // target. Old, but not disposable.
+    let source = fixture.file("logs/clone/src/main.rs", 512);
+    fixture.write("logs/clone/Cargo.toml", b"[package]\nname=\"clone\"\n");
+    make_old(&source, 300);
+
+    // A hidden directory. The scan never walks these by default, so its bytes
+    // are in no total the user saw.
+    let hidden = fixture.file("logs/.archive/old.bin", 2048);
+    make_old(&hidden, 300);
+
+    // A bare repository checkout with no project manifest beside it, so the
+    // only thing that can save it is the `.git` rule itself.
+    let bare = fixture.file("logs/notes/.git/objects/pack/n.pack", 4096);
+    fixture.write("logs/notes/.git/HEAD", b"ref: refs/heads/main\n");
+    fixture.dir("logs/notes/.git/refs");
+    make_old(&bare, 300);
+
+    CleanupTarget {
+        path: fixture.join("logs"),
+        bytes: 4096,
+        files: 1,
+        kind: TargetKind::AgedFiles { days: 90 },
+        confidence: bloatrail::analysis::Confidence::Medium,
+        detection: support::detection_for(&fixture.scan(), "logs")
+            .expect("logs detection")
+            .clone(),
+    }
+}
+
+#[test]
+fn an_age_limited_sweep_never_reaches_into_a_git_directory() {
+    let fixture = Fixture::new();
+    let target = aged_target_hiding_treasure(&fixture);
+
+    let known = KnownPaths::empty();
+    let classifier = Classifier::with_default_detectors();
+    let executor = executor(
+        fixture.path(),
+        &known,
+        &classifier,
+        false,
+        CleanupSafety::Review,
+    );
+
+    let group = support::group_of(target);
+    let report = executor.run(std::iter::once(&group));
+
+    // The old log is what the group promised, and it goes.
+    assert!(
+        !fixture.join("logs/app.log").exists(),
+        "the old log should be removed"
+    );
+
+    // Everything else survives, however old it is.
+    assert!(
+        fixture.join("logs/clone/.git/objects/pack/p.pack").exists(),
+        "git object packs must never be removed by an age sweep"
+    );
+    assert!(
+        fixture.join("logs/clone/src/main.rs").exists(),
+        "hand-written source inside a project must survive"
+    );
+    assert!(
+        fixture.join("logs/.archive/old.bin").exists(),
+        "a hidden directory the scan never walked must not be swept"
+    );
+
+    assert!(
+        fixture.join("logs/notes/.git/objects/pack/n.pack").exists(),
+        "a git directory with no manifest around it must still be refused"
+    );
+
+    // And the preserved subtrees are reported, not silently skipped. Both are
+    // caught one level above `.git`, because a directory containing `.git` is
+    // itself a project root — stopping earlier is the stronger outcome, so the
+    // assertion is that each subtree was preserved and said so, rather than
+    // which rule happened to get there first.
+    let refused: Vec<&str> = report
+        .failures
+        .iter()
+        .filter(|f| f.refused)
+        .map(|f| f.reason.as_str())
+        .collect();
+    for expected in ["clone", "notes"] {
+        assert!(
+            refused
+                .iter()
+                .any(|r| r.contains(expected) && r.contains("project directory")),
+            "`{expected}` should be reported as preserved, got: {refused:?}"
+        );
+    }
+}
+
+#[test]
+fn an_age_limited_sweep_refuses_git_even_when_hidden_directories_are_included() {
+    // `--include-hidden` is what makes the `.git` rule load-bearing: without
+    // it the sweep declines to enter any dot-directory anyway, so the name
+    // check never runs. With it, this is the only thing standing between an
+    // age sweep and a repository's object store.
+    let fixture = Fixture::new();
+    let pack = fixture.file("logs/.git/objects/pack/p.pack", 8192);
+    fixture.write("logs/.git/HEAD", b"ref: refs/heads/main\n");
+    let log = fixture.file("logs/app.log", 4096);
+    make_old(&pack, 300);
+    make_old(&log, 300);
+
+    let target = CleanupTarget {
+        path: fixture.join("logs"),
+        bytes: 4096,
+        files: 1,
+        kind: TargetKind::AgedFiles { days: 90 },
+        confidence: bloatrail::analysis::Confidence::Medium,
+        detection: support::detection_for(&fixture.scan(), "logs")
+            .expect("logs detection")
+            .clone(),
+    };
+
+    let known = KnownPaths::empty();
+    let classifier = Classifier::with_default_detectors();
+    let executor = Executor::new(
+        fixture.path(),
+        &known,
+        &classifier,
+        ExecutionOptions {
+            dry_run: false,
+            permanent: true,
+            limit: CleanupSafety::Review,
+            excludes: bloatrail::pattern::ExcludeSet::default(),
+            include_hidden: true,
+        },
+    );
+
+    let group = support::group_of(target);
+    let report = executor.run(std::iter::once(&group));
+
+    assert!(
+        !fixture.join("logs/app.log").exists(),
+        "the old log should go"
+    );
+    assert!(
+        fixture.join("logs/.git/objects/pack/p.pack").exists(),
+        "the git object store must survive even with --include-hidden"
+    );
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|f| f.refused && f.reason.contains("version-control history")),
+        "the .git refusal should be reported"
+    );
+}
+
+#[test]
+fn an_age_limited_dry_run_still_removes_nothing() {
+    let fixture = Fixture::new();
+    let target = aged_target_hiding_treasure(&fixture);
+
+    let known = KnownPaths::empty();
+    let classifier = Classifier::with_default_detectors();
+    let executor = executor(
+        fixture.path(),
+        &known,
+        &classifier,
+        true,
+        CleanupSafety::Review,
+    );
+
+    let group = support::group_of(target);
+    let report = executor.run(std::iter::once(&group));
+
+    assert!(report.dry_run);
+    assert!(
+        fixture.join("logs/app.log").exists(),
+        "a dry run must touch nothing"
+    );
+    assert!(fixture.join("logs/clone/.git/objects/pack/p.pack").exists());
 }

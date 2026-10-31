@@ -177,6 +177,77 @@ impl<'a> SafetyGuard<'a> {
         Ok(())
     }
 
+    /// Whether an age-limited sweep may descend into `path`.
+    ///
+    /// `Some(reason)` means stop: the subtree is left entirely alone and the
+    /// reason is reported, so a preserved directory is visible rather than
+    /// silent.
+    ///
+    /// This exists because [`TargetKind::AgedFiles`] is the one target kind
+    /// whose removals are not the verified path itself. The guard checks the
+    /// container; the executor then walks live and deletes files inside it. A
+    /// repository, a project or a credential store sitting under a `logs/` or
+    /// `Downloads/` target must stop that walk, or the sweep quietly deletes
+    /// things every other part of Bloatrail promises never to touch.
+    #[must_use]
+    pub fn refuse_descent(&self, path: &Path, name: &str) -> Option<String> {
+        // Version-control metadata, by name and before anything else. This is
+        // the case that corrupts a repository rather than merely losing a
+        // file, and it must not depend on a detector firing.
+        if matches!(name, ".git" | ".hg" | ".svn" | ".jj" | "_darcs" | "CVS") {
+            return Some(format!("`{name}` holds version-control history"));
+        }
+        if sensitive::is_protected_directory(name) {
+            return Some(format!("`{name}` is a credential directory"));
+        }
+
+        // A directory carrying its own classification that forbids deletion —
+        // `.git` reached by detection rather than by name, a nested VM image
+        // store, anything a detector marked NeverDelete or Dangerous.
+        if let Some(detection) = self.classify_live(path, name) {
+            if !detection.cleanup.is_deletable() {
+                return Some(format!(
+                    "`{name}` is classified {}",
+                    detection.cleanup.label()
+                ));
+            }
+        }
+
+        // A project root. Nobody who asks Bloatrail to remove files older than
+        // ninety days from `Downloads` means "and also prune the source tree
+        // of the repository I unpacked in there last spring".
+        if read_markers(path).intersects(Markers::PROJECT_ROOT) {
+            return Some(format!("`{name}` looks like a project directory"));
+        }
+
+        None
+    }
+
+    /// Classify a live directory, or `None` when no rule matches.
+    fn classify_live(&self, path: &Path, name: &str) -> Option<Detection> {
+        let parent = path.parent();
+        let lowered = name.to_lowercase();
+        let ctx = DirContext {
+            path,
+            name,
+            name_lower: &lowered,
+            parent_name: parent.and_then(Path::file_name).and_then(|n| n.to_str()),
+            markers: read_markers(path),
+            parent_markers: parent.map(read_markers).unwrap_or_default(),
+            grandparent_markers: parent
+                .and_then(Path::parent)
+                .map(read_markers)
+                .unwrap_or_default(),
+            // Depth only affects the generic low-confidence rules, which refuse
+            // to fire at the root of a scan; any non-zero value is correct here.
+            depth: 1,
+            subdir_count: 0,
+            file_count: 0,
+            env: self.known,
+        };
+        self.classifier.classify(&ctx)
+    }
+
     /// Re-run classification against the live filesystem.
     ///
     /// The plan may have been built seconds or hours ago. If the directory no
@@ -198,32 +269,7 @@ impl<'a> SafetyGuard<'a> {
             return Err(Error::refused(path, "it is no longer a directory"));
         }
 
-        let markers = read_markers(path);
-        let parent = path.parent();
-        let parent_markers = parent.map(read_markers).unwrap_or_default();
-        let grandparent_markers = parent
-            .and_then(Path::parent)
-            .map(read_markers)
-            .unwrap_or_default();
-
-        let lowered = name.to_lowercase();
-        let ctx = DirContext {
-            path,
-            name,
-            name_lower: &lowered,
-            parent_name: parent.and_then(Path::file_name).and_then(|n| n.to_str()),
-            markers,
-            parent_markers,
-            grandparent_markers,
-            // Depth only affects the generic low-confidence rules, which refuse
-            // to fire at the root of a scan; any non-zero value is correct here.
-            depth: 1,
-            subdir_count: 0,
-            file_count: 0,
-            env: self.known,
-        };
-
-        let Some(current) = self.classifier.classify(&ctx) else {
+        let Some(current) = self.classify_live(path, name) else {
             return Err(Error::refused(
                 path,
                 "it no longer matches any known cleanup rule",

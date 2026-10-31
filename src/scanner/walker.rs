@@ -19,6 +19,7 @@
 //!   retained and not classified. On a developer machine that is the difference
 //!   between a hundred thousand retained nodes and a million.
 
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, Metadata};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -135,11 +136,20 @@ struct RawDir {
 /// What one `read_dir` pass learned about a directory.
 struct Listing {
     markers: Markers,
-    subdirs: Vec<Box<str>>,
+    /// Child directories as `(real name, display name)`.
+    ///
+    /// The two differ only when a name is not valid UTF-8. Reconstructing a
+    /// path from the lossy form yields a path that does not exist, so the real
+    /// `OsString` is what every `join` must use; the `Box<str>` exists purely
+    /// to be printed.
+    subdirs: Vec<(OsString, Box<str>)>,
     files: Vec<FileRecord>,
 }
 
 struct FileRecord {
+    /// Real name, for rebuilding a path that actually opens.
+    raw: OsString,
+    /// Display name, possibly lossy.
     name: Box<str>,
     size: u64,
     modified: Option<u64>,
@@ -275,12 +285,14 @@ impl<'a> Walk<'a> {
 
             let raw_name = entry.file_name();
             match raw_name.to_str() {
-                Some(name) => self.consume_entry(path, &entry, name, &mut listing),
+                Some(name) => self.consume_entry(path, &entry, &raw_name, name, &mut listing),
                 None => {
-                    // Non-UTF-8 names are rare; a lossy copy keeps their bytes
-                    // counted rather than silently under-reporting the total.
+                    // Non-UTF-8 names are rare, but they must not become lossy
+                    // *paths*: a path rebuilt from U+FFFD does not exist, so
+                    // the directory would read as empty and be reported as
+                    // vanished. The lossy copy is for display only.
                     let lossy = raw_name.to_string_lossy().into_owned();
-                    self.consume_entry(path, &entry, &lossy, &mut listing);
+                    self.consume_entry(path, &entry, &raw_name, &lossy, &mut listing);
                 }
             }
         }
@@ -292,6 +304,7 @@ impl<'a> Walk<'a> {
         &self,
         parent: &Path,
         entry: &fs::DirEntry,
+        raw_name: &OsStr,
         name: &str,
         listing: &mut Listing,
     ) {
@@ -336,6 +349,7 @@ impl<'a> Walk<'a> {
             // symlink farm from inflating the totals.
             if !is_dir_entry && !self.excluded_file(parent, name) {
                 listing.files.push(FileRecord {
+                    raw: raw_name.to_os_string(),
                     name: name.into(),
                     size: meta.len(),
                     modified: modified_secs(&meta),
@@ -347,7 +361,7 @@ impl<'a> Walk<'a> {
         }
 
         if is_dir_entry || is_link {
-            self.consider_subdir(parent, name, is_link, &meta, listing);
+            self.consider_subdir(parent, raw_name, name, is_link, &meta, listing);
             return;
         }
 
@@ -361,6 +375,7 @@ impl<'a> Walk<'a> {
         }
 
         listing.files.push(FileRecord {
+            raw: raw_name.to_os_string(),
             name: name.into(),
             size: meta.len(),
             modified: modified_secs(&meta),
@@ -372,12 +387,13 @@ impl<'a> Walk<'a> {
     fn consider_subdir(
         &self,
         parent: &Path,
+        raw_name: &OsStr,
         name: &str,
         is_link: bool,
         meta: &Metadata,
         listing: &mut Listing,
     ) {
-        let path = parent.join(name);
+        let path = parent.join(raw_name);
 
         // Exclusions are checked before the link is resolved, so an excluded
         // name is skipped whether it is a real directory or a link to one.
@@ -391,6 +407,7 @@ impl<'a> Walk<'a> {
                 Ok(target) if target.is_dir() => {}
                 Ok(target) => {
                     listing.files.push(FileRecord {
+                        raw: raw_name.to_os_string(),
                         name: name.into(),
                         size: target.len(),
                         modified: modified_secs(&target),
@@ -437,7 +454,7 @@ impl<'a> Walk<'a> {
             return;
         }
 
-        listing.subdirs.push(name.into());
+        listing.subdirs.push((raw_name.to_os_string(), name.into()));
     }
 
     /// Exclusion test for a file, avoiding the path join when no anchored
@@ -611,7 +628,7 @@ impl<'a> Walk<'a> {
             categories.add_file(category, file.size);
 
             self.top.offer(file.size, || FileEntry {
-                path: path.join(&*file.name),
+                path: path.join(&file.raw),
                 size: file.size,
                 category,
                 modified: file.modified,
@@ -630,8 +647,11 @@ impl<'a> Walk<'a> {
         } else {
             subdirs
                 .into_par_iter()
-                .map(|child_name| {
-                    let child_path = path.join(&*child_name);
+                .map(|(child_raw, child_name)| {
+                    // Joined from the real name, so the recursion opens the
+                    // directory that exists rather than a lossy rendering of
+                    // it; `child_name` travels on only as the display label.
+                    let child_path = path.join(&child_raw);
                     self.walk_dir(
                         &child_path,
                         child_name,

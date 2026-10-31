@@ -323,3 +323,35 @@ mod unix_only {
             .any(|s| s.reason == bloatrail::scanner::SkipReason::PermissionDenied));
     }
 }
+
+/// A directory whose name is not valid UTF-8 must still be walked.
+///
+/// Rebuilding the child path from `to_string_lossy` produced a path containing
+/// U+FFFD, which does not exist: `read_dir` failed, the subtree was recorded
+/// as zero bytes, and the skip line claimed the directory "no longer exists".
+#[cfg(unix)]
+#[test]
+fn non_utf8_directory_names_are_traversed_not_dropped() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let fixture = Fixture::new();
+    // 0xE9 is `é` in Latin-1 and invalid on its own in UTF-8.
+    let raw = OsStr::from_bytes(b"caf\xe9");
+    let dir = fixture.path().join(raw);
+    std::fs::create_dir(&dir).expect("create non-utf8 dir");
+    std::fs::write(dir.join("track.flac"), vec![0u8; 4096]).expect("write");
+
+    let scan = fixture.scan();
+
+    assert_eq!(
+        scan.totals.bytes, 4096,
+        "the subtree's bytes must be counted, not dropped"
+    );
+    assert_eq!(scan.totals.files, 1);
+    assert!(
+        scan.skipped.is_empty(),
+        "nothing should be reported as skipped: {:?}",
+        scan.skipped
+    );
+}

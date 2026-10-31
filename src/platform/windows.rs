@@ -1,19 +1,15 @@
 //! Windows-specific filesystem facts.
 //!
 //! Bloatrail deliberately avoids a heavyweight Win32 binding: the four
-//! primitives it needs (free space, reparse-point detection, a volume identity
-//! and a file identity) are two FFI calls plus two attribute checks.
+//! primitives it needs (free space, link detection, a volume identity and a
+//! file identity) are two FFI calls plus two checks std already exposes.
 
 use std::fs::Metadata;
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::fs::MetadataExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 
 use super::DiskUsage;
-
-/// `FILE_ATTRIBUTE_REPARSE_POINT` from `winnt.h`.
-const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
 
 /// `BY_HANDLE_FILE_INFORMATION` from `fileapi.h`. The three `FILETIME` fields
 /// are kept as `u32` pairs because nothing here reads them.
@@ -69,13 +65,26 @@ pub fn disk_usage(path: &Path) -> Option<DiskUsage> {
     Some(DiskUsage { total, available })
 }
 
-/// Whether an entry is a reparse point (symlink, junction or mount point).
+/// Whether an entry redirects somewhere else — a symlink, junction or mount
+/// point.
 ///
 /// Junctions are how Windows grafts one volume into another's namespace, so
 /// this is the check that makes `--same-filesystem` meaningful here.
+///
+/// Deliberately *not* `FILE_ATTRIBUTE_REPARSE_POINT`. That attribute is set by
+/// a great many things that are not links and must be walked normally:
+/// OneDrive and other cloud placeholders, deduplicated files, WIM-backed
+/// files, AppX installs. Treating those as links stops the walk at them, and
+/// on a stock Windows 11 machine — where OneDrive backs Desktop, Documents and
+/// Pictures by default — that silently drops those trees out of every total
+/// this tool reports.
+///
+/// `FileType::is_symlink` is the correct test: on Windows it is true only for
+/// *name-surrogate* reparse tags, which is precisely `IO_REPARSE_TAG_SYMLINK`
+/// and `IO_REPARSE_TAG_MOUNT_POINT` — the two that point elsewhere.
 #[must_use]
 pub fn is_reparse_point(meta: &Metadata) -> bool {
-    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    meta.file_type().is_symlink()
 }
 
 /// An identifier for the volume a path lives on.

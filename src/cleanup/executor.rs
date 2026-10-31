@@ -106,6 +106,13 @@ pub struct ExecutionOptions {
     /// file list, so without these it could delete files the scan was told to
     /// ignore — and which therefore never appeared in the preview.
     pub excludes: ExcludeSet,
+    /// The same hidden-directory policy the scan used.
+    ///
+    /// For exactly the reason above. The walk that produced the preview skips
+    /// dot-directories unless asked not to, so their bytes are in nobody's
+    /// total and on nobody's screen; a sweep that descends into them anyway
+    /// deletes storage the user was never shown.
+    pub include_hidden: bool,
 }
 
 impl ExecutionOptions {
@@ -117,6 +124,7 @@ impl ExecutionOptions {
             permanent: false,
             limit: CleanupSafety::Safe,
             excludes: ExcludeSet::default(),
+            include_hidden: false,
         }
     }
 }
@@ -161,11 +169,12 @@ impl<'a> Executor<'a> {
             }
             for target in &group.targets {
                 match self.execute_target(target) {
-                    Ok(removals) => {
-                        for removal in removals {
+                    Ok(sweep) => {
+                        for removal in sweep.removed {
                             report.bytes_freed = report.bytes_freed.saturating_add(removal.bytes);
                             report.removed.push(removal);
                         }
+                        report.failures.extend(sweep.preserved);
                     }
                     Err(error) => report.failures.push(Failure {
                         path: target.path.clone(),
@@ -179,13 +188,16 @@ impl<'a> Executor<'a> {
         report
     }
 
-    fn execute_target(&self, target: &CleanupTarget) -> Result<Vec<Removal>> {
+    fn execute_target(&self, target: &CleanupTarget) -> Result<AgedSweep> {
         self.guard.verify(target)?;
 
         match target.kind {
             TargetKind::Directory => {
                 let removal = self.remove(&target.path, target.bytes)?;
-                Ok(vec![removal])
+                Ok(AgedSweep {
+                    removed: vec![removal],
+                    preserved: Vec::new(),
+                })
             }
             TargetKind::AgedFiles { days } => self.remove_aged_files(&target.path, days),
             TargetKind::External => Err(Error::refused(
@@ -238,12 +250,18 @@ impl<'a> Executor<'a> {
     ///
     /// Directories are never removed here: an empty `Downloads/receipts/` is
     /// harmless, whereas removing it could break something that expects it.
-    fn remove_aged_files(&self, dir: &Path, days: u32) -> Result<Vec<Removal>> {
+    ///
+    /// This is the one target kind whose removals are not the path the
+    /// [`SafetyGuard`] verified — the guard clears the container, and then
+    /// this walks it live. Everything the walk meets is therefore re-checked
+    /// on its own account, and any subtree it declines to enter is reported
+    /// rather than passed over in silence.
+    fn remove_aged_files(&self, dir: &Path, days: u32) -> Result<AgedSweep> {
         let cutoff = std::time::SystemTime::now()
             .checked_sub(std::time::Duration::from_secs(u64::from(days) * 86_400))
             .ok_or_else(|| Error::refused(dir, "the age threshold is out of range"))?;
 
-        let mut removals = Vec::new();
+        let mut sweep = AgedSweep::default();
         let mut stack = vec![dir.to_path_buf()];
 
         while let Some(current) = stack.pop() {
@@ -270,7 +288,18 @@ impl<'a> Executor<'a> {
                 }
 
                 if file_type.is_dir() {
-                    if sensitive::is_protected_directory(&name) {
+                    // The scan's own traversal policy. Bytes it declined to
+                    // walk are in no total the user was shown, so deleting
+                    // them here would act beyond the preview.
+                    if !self.options.include_hidden && is_hidden(&name) {
+                        continue;
+                    }
+                    if let Some(reason) = self.guard.refuse_descent(&entry.path(), &name) {
+                        sweep.preserved.push(Failure {
+                            path: entry.path(),
+                            reason: format!("left untouched: {reason}"),
+                            refused: true,
+                        });
                         continue;
                     }
                     stack.push(entry.path());
@@ -291,15 +320,33 @@ impl<'a> Executor<'a> {
                 }
 
                 match self.remove(&entry.path(), meta.len()) {
-                    Ok(removal) => removals.push(removal),
-                    // One locked file must not abort the rest of the cleanup.
-                    Err(_) => continue,
+                    Ok(removal) => sweep.removed.push(removal),
+                    // One locked file must not abort the rest of the cleanup,
+                    // but a sweep that silently deleted nothing must not look
+                    // like a sweep that had nothing to delete.
+                    Err(error) => sweep.preserved.push(Failure {
+                        path: entry.path(),
+                        reason: error.to_string(),
+                        refused: false,
+                    }),
                 }
             }
         }
 
-        Ok(removals)
+        Ok(sweep)
     }
+}
+
+/// What an age-limited sweep did, and what it deliberately did not do.
+#[derive(Debug, Default)]
+struct AgedSweep {
+    removed: Vec<Removal>,
+    preserved: Vec<Failure>,
+}
+
+/// Whether a directory name is hidden, matching the scanner's rule.
+fn is_hidden(name: &str) -> bool {
+    name.starts_with('.') && name != "." && name != ".."
 }
 
 #[cfg(test)]
@@ -364,6 +411,7 @@ mod tests {
                 permanent: false,
                 limit: CleanupSafety::Safe,
                 excludes: ExcludeSet::default(),
+                include_hidden: false,
             },
         );
 
@@ -396,6 +444,7 @@ mod tests {
                 permanent: true,
                 limit: CleanupSafety::Safe,
                 excludes: ExcludeSet::default(),
+                include_hidden: false,
             },
         );
 
@@ -432,6 +481,7 @@ mod tests {
                 permanent: true,
                 limit: CleanupSafety::Safe,
                 excludes: ExcludeSet::default(),
+                include_hidden: false,
             },
         );
 
@@ -463,6 +513,7 @@ mod tests {
                 permanent: true,
                 limit: CleanupSafety::Review,
                 excludes: ExcludeSet::default(),
+                include_hidden: false,
             },
         );
 

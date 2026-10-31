@@ -157,6 +157,35 @@ impl Markers {
     /// otherwise have `Temp` classified as disposable Unity scratch data.
     pub const UNITY_PROJECT: Markers = Markers::UNITY_ASSETS.union(Markers::UNITY_SETTINGS);
 
+    /// Any marker that says "somebody's project lives here".
+    ///
+    /// Used where the question is not *which* ecosystem but merely whether a
+    /// directory is a project at all — the age-limited cleanup sweep stops at
+    /// one rather than pruning files out of a source tree.
+    ///
+    /// Deliberately excludes the weaker markers a non-project directory can
+    /// carry by accident: a lone `Makefile`, `Dockerfile` or `tsconfig.json`
+    /// says less than the lockfiles and manifests here do.
+    pub const PROJECT_ROOT: Markers = Markers::CARGO_TOML
+        .union(Markers::JS_PROJECT)
+        .union(Markers::PY_PROJECT)
+        .union(Markers::JVM_PROJECT)
+        .union(Markers::GO_MOD)
+        .union(Markers::DOTNET_PROJECT)
+        .union(Markers::DOTNET_SOLUTION)
+        .union(Markers::CMAKELISTS)
+        .union(Markers::MESON_BUILD)
+        .union(Markers::SWIFT_PACKAGE)
+        .union(Markers::XCODE_PROJECT)
+        .union(Markers::GEMFILE)
+        .union(Markers::COMPOSER_JSON)
+        .union(Markers::PUBSPEC)
+        .union(Markers::MIX_EXS)
+        .union(Markers::HASKELL_PROJECT)
+        .union(Markers::BUILD_ZIG)
+        .union(Markers::GIT_DIR)
+        .union(Markers::UNITY_ASSETS);
+
     /// Whether both halves of the Unity layout are present.
     #[inline]
     #[must_use]

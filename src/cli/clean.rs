@@ -132,6 +132,7 @@ pub fn run(context: &Context, args: &CleanArgs) -> Result<()> {
             permanent: args.permanent,
             limit,
             excludes: ExcludeSet::new(&context.settings.exclude),
+            include_hidden: context.settings.include_hidden,
         },
     );
     let report = executor.run(selected.iter().copied());
@@ -163,6 +164,7 @@ fn preview(
             permanent: false,
             limit: CleanupSafety::Review,
             excludes: ExcludeSet::new(&context.settings.exclude),
+            include_hidden: context.settings.include_hidden,
         },
     );
     let report = executor.run(selected.iter().copied());
@@ -206,6 +208,7 @@ fn run_json(
                 .max()
                 .unwrap_or(CleanupSafety::Safe),
             excludes: ExcludeSet::new(&context.settings.exclude),
+            include_hidden: context.settings.include_hidden,
         },
     );
     let report = executor.run(selected.iter().copied());
@@ -302,6 +305,13 @@ pub enum Selection {
     Indexes(Vec<usize>),
 }
 
+/// Highest group number a selection may mention.
+///
+/// A plan groups by classification, so a real one has a few dozen groups at
+/// most; this ceiling exists purely so that a mistyped range is rejected
+/// rather than expanded.
+const MAX_GROUP_INDEX: usize = 4_096;
+
 /// Parse a selection expression such as `all`, `1,3` or `1-4`.
 ///
 /// # Errors
@@ -332,6 +342,15 @@ pub fn parse_selection(input: &str) -> std::result::Result<Selection, String> {
             if start == 0 || end < start {
                 return Err(format!("`{part}` is not a valid range"));
             }
+            // Bound before expanding. `--select 1-99999999999` is a typo, but
+            // materialising it would allocate hundreds of gigabytes and take
+            // the process down before anyone could read an error message.
+            if end > MAX_GROUP_INDEX {
+                return Err(format!(
+                    "`{part}` covers group {end}, and a cleanup plan never has \
+                     more than {MAX_GROUP_INDEX} groups"
+                ));
+            }
             indexes.extend(start..=end);
         } else {
             let index: usize = part
@@ -339,6 +358,9 @@ pub fn parse_selection(input: &str) -> std::result::Result<Selection, String> {
                 .map_err(|_| format!("`{part}` is not a group number"))?;
             if index == 0 {
                 return Err("group numbers start at 1".to_string());
+            }
+            if index > MAX_GROUP_INDEX {
+                return Err(format!("there is no group {index}"));
             }
             indexes.push(index);
         }
@@ -370,6 +392,23 @@ fn confirm(context: &Context) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_absurd_range_is_rejected_rather_than_expanded() {
+        // Before this was bounded, parsing allocated one entry per number in
+        // the range and the process died before printing anything.
+        let error = parse_selection("1-99999999999").unwrap_err();
+        assert!(error.contains("never has more than"), "got: {error}");
+
+        let error = parse_selection("99999999999").unwrap_err();
+        assert!(error.contains("no group"), "got: {error}");
+
+        // Ordinary ranges still work.
+        assert_eq!(
+            parse_selection("1-3").unwrap(),
+            Selection::Indexes(vec![1, 2, 3])
+        );
+    }
 
     #[test]
     fn keywords_are_recognised() {

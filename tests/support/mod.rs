@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use bloatrail::analysis::Classifier;
+use bloatrail::cleanup::planner::CleanupGroup;
 use bloatrail::platform::KnownPaths;
 use bloatrail::scanner::{self, ScanOptions, ScanResult};
 
@@ -154,4 +155,21 @@ pub fn detection_for<'a>(
     suffix: &str,
 ) -> Option<&'a bloatrail::analysis::Detection> {
     node_named(scan, suffix).and_then(|node| node.detection.as_ref())
+}
+
+/// Wrap a single target in a selectable group, for tests that drive the
+/// executor directly rather than through a plan.
+pub fn group_of(target: bloatrail::cleanup::planner::CleanupTarget) -> CleanupGroup {
+    CleanupGroup {
+        index: Some(1),
+        title: "test group".to_string(),
+        safety: target.detection.cleanup,
+        category: target.detection.category,
+        technology: target.detection.technology,
+        evidence: Vec::new(),
+        regenerated_by: None,
+        bytes: target.bytes,
+        external: false,
+        targets: vec![target],
+    }
 }

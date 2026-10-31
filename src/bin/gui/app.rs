@@ -334,6 +334,11 @@ impl App {
                     permanent: false,
                     limit,
                     excludes: ExcludeSet::default(),
+                    // The app scans with `ScanOptions::new`, which does not
+                    // traverse hidden directories, and offers no toggle for
+                    // it. An age-limited sweep must use the same policy or it
+                    // would delete storage the scan never counted or showed.
+                    include_hidden: false,
                 },
             );
             let report = executor.run(groups.iter());
