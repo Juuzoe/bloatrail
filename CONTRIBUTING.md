@@ -41,9 +41,13 @@ during the directory walk.
    "the next free bit" merge without a conflict and make one file count as
    the other. `every_single_marker_has_its_own_bit` fails when that happens.
    If the directory you are classifying starts with a dot, it also needs to
-   be on the `is_always_traversed` list in
+   be on the `ALWAYS_TRAVERSED` list in
    [`src/scanner/walker.rs`](src/scanner/walker.rs), or a default scan never
-   counts it.
+   counts it. Adding to that list changes what a scan covers, so
+   `the_default_coverage_stamp_is_pinned` will fail and print the new stamp:
+   update it in the same commit. That is deliberate, because `growth` restarts
+   its window when coverage changes rather than reporting the newly counted
+   bytes as growth.
 2. Write the detector.
 3. Register it in `detectors::all()`.
 4. Write tests.
