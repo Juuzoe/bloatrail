@@ -36,7 +36,14 @@ during the directory walk.
 
 1. Add the marker files your ecosystem uses to `Markers` in
    [`src/analysis/context.rs`](src/analysis/context.rs), and teach
-   `Markers::observe` to recognise them.
+   `Markers::observe` to recognise them. Take the highest bit in use plus one,
+   and rebase before opening the pull request: two branches that each take
+   "the next free bit" merge without a conflict and make one file count as
+   the other. `every_single_marker_has_its_own_bit` fails when that happens.
+   If the directory you are classifying starts with a dot, it also needs to
+   be on the `is_always_traversed` list in
+   [`src/scanner/walker.rs`](src/scanner/walker.rs), or a default scan never
+   counts it.
 2. Write the detector.
 3. Register it in `detectors::all()`.
 4. Write tests.
