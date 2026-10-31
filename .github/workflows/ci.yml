@@ -112,3 +112,92 @@ jobs:
       # only checked for compilation and a single sanity iteration.
       - run: cargo bench --no-run
       - run: cargo bench -- --test
+
+  # A tool that deletes files should know when its dependencies are reported
+  # vulnerable. Checked against the committed lockfile, because that is the
+  # dependency set users actually get.
+  #
+  # Vulnerabilities fail the build; "unmaintained" and "yanked" warnings do
+  # not. A crate going unmaintained is worth knowing about but is not a reason
+  # for an unrelated pull request to go red on the day it is announced.
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - run: cargo audit
+
+  # The install scripts are the front door: a person's first contact with
+  # Bloatrail is `curl | sh`, and a break there is indistinguishable from the
+  # project being broken. Nothing else in CI executes them, so they are run
+  # here against the published release, on every platform they claim to
+  # support, and the installed binary is made to actually do something.
+  install-scripts:
+    name: install script (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Lint install.sh
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck install.sh
+
+      - name: Install and run (Unix)
+        if: runner.os != 'Windows'
+        env:
+          BLOATRAIL_INSTALL_DIR: ${{ runner.temp }}/bloatrail-bin
+        run: |
+          set -eux
+          sh install.sh
+          "$BLOATRAIL_INSTALL_DIR/bloatrail" --version
+          # Prove it runs a real workload, not just --version.
+          "$BLOATRAIL_INSTALL_DIR/bloatrail" scan . --no-progress --json > result.json
+          test -s result.json
+          grep -q '"schema_version"' result.json
+
+      - name: Install and run (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          BLOATRAIL_INSTALL_DIR: ${{ runner.temp }}\bloatrail-bin
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\install.ps1
+          $exe = Join-Path $env:BLOATRAIL_INSTALL_DIR 'bloatrail.exe'
+          & $exe --version
+          & $exe scan . --no-progress --json > result.json
+          if (-not (Select-String -Path result.json -Pattern '"schema_version"' -Quiet)) {
+            throw 'scan --json produced no schema_version'
+          }
+
+  # The demo fixture backs every screenshot in the README. If it stops
+  # building, the documentation stops being reproducible and nobody notices
+  # until someone tries to follow it.
+  demo-fixture:
+    name: demo fixture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --bin bloatrail
+      - name: Build the fixture and scan it
+        run: |
+          set -eux
+          python3 docs/demo/fixture.py "$RUNNER_TEMP/Projects"
+          ./target/debug/bloatrail scan "$RUNNER_TEMP/Projects" --no-progress
+          # The fixture exists to make one point: same name, opposite verdict.
+          ./target/debug/bloatrail explain "$RUNNER_TEMP/Projects/backend-api/target" \
+            --no-progress | grep -q 'Rust build artifacts'
+          ./target/debug/bloatrail explain "$RUNNER_TEMP/Projects/marketing/target" \
+            --no-progress | grep -q 'no project context'
