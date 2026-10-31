@@ -6,6 +6,7 @@
 
 use crate::analysis::engine::Detector;
 
+pub mod bazel;
 pub mod cpp;
 pub mod dotnet;
 pub mod generic;
@@ -43,6 +44,7 @@ pub fn all() -> Vec<Box<dyn Detector>> {
         Box::new(go::GoOutput),
         Box::new(cpp::CMakeOutput),
         Box::new(cpp::NativeBuildDir),
+        Box::new(bazel::BazelOutput),
         Box::new(git::VersionControl),
         Box::new(ide::IdeStorage),
         Box::new(unreal::UnrealEngineOutput),
