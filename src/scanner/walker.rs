@@ -795,85 +795,101 @@ fn is_hidden(name: &str) -> bool {
 /// even without `--include-hidden`.
 ///
 /// Skipping these by default would make Bloatrail miss the single largest
-/// category of developer bloat, which would defeat the point of the tool.
+/// category of developer bloat, which would defeat the point of the tool. A
+/// name missing from here means every byte under it is counted nowhere, so the
+/// list is also part of what a recorded scan covered: the history's coverage
+/// stamp hashes this slice, and changing it marks scans before and after the
+/// change as not comparable.
+///
+/// Only directories whose bulk is regenerable belong here. A dot-directory
+/// that is mostly credentials or configuration (`.ssh`, `.aws`, `.kube`) stays
+/// out.
+pub const ALWAYS_TRAVERSED: &[&str] = &[
+    // Version control.
+    ".git",
+    ".hg",
+    ".svn",
+    ".jj",
+    // JavaScript framework and bundler output.
+    ".next",
+    ".nuxt",
+    ".turbo",
+    ".nx",
+    ".parcel-cache",
+    ".svelte-kit",
+    ".angular",
+    ".astro",
+    ".docusaurus",
+    ".expo",
+    ".vite",
+    ".output",
+    ".rollup.cache",
+    ".eslintcache",
+    ".wrangler",
+    // JVM builds.
+    ".gradle",
+    ".kotlin",
+    // Python environments and tool caches.
+    ".venv",
+    ".virtualenv",
+    ".tox",
+    ".nox",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".hypothesis",
+    ".ipynb_checkpoints",
+    ".eggs",
+    // Editor and IDE state.
+    ".vs",
+    ".idea",
+    ".vscode",
+    ".fleet",
+    ".zed",
+    ".history",
+    // Per-project build output of other ecosystems.
+    ".terraform",
+    ".stack-work",
+    ".dart_tool",
+    ".build",
+    ".packages",
+    ".zig-cache",
+    // `node_modules/.pnpm` is pnpm's per-project virtual store, and it holds
+    // the packages themselves: everything beside it in `node_modules` is a
+    // symlink pointing back into here. Leaving it out reported a pnpm
+    // project's `node_modules` as empty, which is the one directory the tool
+    // exists to find. `.pnpm-store` below is the global store and a different
+    // thing.
+    ".pnpm",
+    // Per-user package stores, toolchain homes and caches.
+    ".cargo",
+    ".rustup",
+    ".npm",
+    ".yarn",
+    ".pnpm-store",
+    ".bun",
+    ".deno",
+    ".m2",
+    ".nuget",
+    ".gem",
+    ".bundle",
+    ".conda",
+    ".cache",
+    ".ccache",
+    ".docker",
+    ".local",
+    ".config",
+    ".android",
+    ".ollama",
+    ".node-gyp",
+    ".electron",
+    ".pyenv",
+    ".nvm",
+    ".sdkman",
+];
+
 fn is_always_traversed(name: &str) -> bool {
-    matches!(
-        name,
-        ".git"
-            | ".hg"
-            | ".svn"
-            | ".jj"
-            | ".next"
-            | ".nuxt"
-            | ".turbo"
-            | ".nx"
-            | ".parcel-cache"
-            | ".svelte-kit"
-            | ".angular"
-            | ".astro"
-            | ".docusaurus"
-            | ".expo"
-            | ".vite"
-            | ".output"
-            | ".gradle"
-            | ".kotlin"
-            | ".venv"
-            | ".virtualenv"
-            | ".tox"
-            | ".nox"
-            | ".pytest_cache"
-            | ".mypy_cache"
-            | ".ruff_cache"
-            | ".hypothesis"
-            | ".ipynb_checkpoints"
-            | ".eggs"
-            | ".vs"
-            | ".idea"
-            | ".vscode"
-            | ".fleet"
-            | ".zed"
-            | ".history"
-            | ".cargo"
-            | ".rustup"
-            | ".npm"
-            | ".yarn"
-            // `node_modules/.pnpm` is pnpm's per-project virtual store, and it
-            // holds the packages themselves: everything beside it in
-            // `node_modules` is a symlink pointing back into here. Leaving it
-            // out reported a pnpm project's `node_modules` as empty, which is
-            // the one directory the tool exists to find. `.pnpm-store` below is
-            // the global store and a different thing.
-            | ".pnpm"
-            | ".pnpm-store"
-            | ".bun"
-            | ".deno"
-            | ".m2"
-            | ".nuget"
-            | ".gem"
-            | ".bundle"
-            | ".conda"
-            | ".cache"
-            | ".ccache"
-            | ".docker"
-            | ".terraform"
-            | ".stack-work"
-            | ".dart_tool"
-            | ".build"
-            | ".packages"
-            | ".local"
-            | ".config"
-            | ".android"
-            | ".ollama"
-            | ".node-gyp"
-            | ".electron"
-            | ".pyenv"
-            | ".nvm"
-            | ".sdkman"
-            | ".rollup.cache"
-            | ".eslintcache"
-            | ".wrangler"
-            | ".zig-cache"
-    )
+    ALWAYS_TRAVERSED.contains(&name)
 }
 
 fn read_markers(path: &Path) -> Markers {
@@ -950,6 +966,29 @@ mod tests {
             );
         }
         assert!(!is_always_traversed(".secret-stuff"));
+    }
+
+    #[test]
+    fn the_always_traversed_list_is_well_formed() {
+        let mut names = ALWAYS_TRAVERSED.to_vec();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), ALWAYS_TRAVERSED.len(), "no duplicates");
+
+        for name in ALWAYS_TRAVERSED {
+            assert!(is_hidden(name), "{name} is not a dot-directory");
+            assert!(!name.contains(['/', '\\']), "{name} is a path, not a name");
+        }
+
+        // No credential store is walked by default. `.docker` predates this
+        // test: Docker keeps data there beside `config.json`, and the whole
+        // directory is registered `Review`, so nothing in it is ever offered.
+        for name in ALWAYS_TRAVERSED.iter().filter(|name| **name != ".docker") {
+            assert!(
+                !crate::analysis::sensitive::is_protected_directory(name),
+                "{name} is a credential directory"
+            );
+        }
     }
 
     #[test]

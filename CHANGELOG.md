@@ -149,6 +149,35 @@ one directory the tool exists to find.
 - `.nx` joins it: Nx keeps its build cache there and it grows to gigabytes on a
   monorepo.
 
+### Coverage
+
+What a scan counts changes over time: an upgrade starts walking a directory or
+recognising a store, a setting such as `--include-hidden` is turned on. Every
+recorded scan now says what it covered, so `growth` and `diff` stop reporting
+those changes as growth.
+
+- Every snapshot records a coverage stamp: a short digest of the
+  always-traversed list, the hidden-directory, symlink, filesystem and exclude
+  settings, and the well-known location rules. Rules are hashed as anchor and
+  relative path (`~/.cargo/registry`, `%LOCALAPPDATA%/npm-cache`), never as a
+  resolved path, so the stamp is the same on every run and on every machine of
+  one platform with the same settings.
+- `growth` measures attribution, the scan table and the net change from the
+  first scan recorded under the newest scan's coverage, and says where that was
+  and how many earlier scans it left out. Before, an upgrade that started
+  walking a directory, or one scan with `--include-hidden`, showed up as growth
+  that never happened on disk. The free-space trend still uses every scan: it
+  reads the volume, which the scanner's rules do not change.
+- `diff` across a coverage change still reports the figures, but says the two
+  scans were counted under different rules and marks the net change as
+  including it.
+- Scans recorded before coverage was tracked count as different coverage from
+  stamped ones. A record with no stamps at all, or one stamp throughout,
+  behaves exactly as before.
+- JSON: `diff` gains `coverage_changed`; `growth` gains `coverage_changed_at`
+  (absent when coverage never changed) and `earlier_scans`, and its `points`
+  hold only the comparable scans. All additive, so `schema_version` stays 1.
+
 ### Tests
 
 - The unreadable-directory test probes the directory it locked instead of

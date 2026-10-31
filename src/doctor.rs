@@ -427,6 +427,7 @@ mod tests {
             duration: Duration::from_secs(1),
             started_at: SystemTime::UNIX_EPOCH,
             cancelled: false,
+            coverage: String::new(),
         }
     }
 

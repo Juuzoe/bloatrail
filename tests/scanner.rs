@@ -153,6 +153,35 @@ fn developer_dot_directories_are_always_traversed() {
 }
 
 #[test]
+fn a_scan_records_the_coverage_it_was_counted_under() {
+    let fixture = Fixture::new();
+    fixture.file("a.bin", 10);
+    let known = bloatrail::platform::KnownPaths::empty();
+
+    let default = fixture.scan();
+    assert_eq!(
+        default.coverage,
+        bloatrail::scanner::coverage_stamp(
+            &bloatrail::scanner::ScanOptions::new(fixture.path()),
+            &known
+        )
+    );
+    assert_eq!(
+        fixture.scan().coverage,
+        default.coverage,
+        "stable across runs"
+    );
+
+    let hidden = fixture.scan_with(|options| options.include_hidden = true);
+    assert_ne!(
+        hidden.coverage, default.coverage,
+        "walking every hidden directory counts different bytes"
+    );
+    let excluded = fixture.scan_with(|options| options.excludes = ExcludeSet::new(["*.iso"]));
+    assert_ne!(excluded.coverage, default.coverage);
+}
+
+#[test]
 fn a_pnpm_node_modules_reports_the_packages_inside_it() {
     let fixture = Fixture::new();
     fixture.write("app/package.json", b"{}");

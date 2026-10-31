@@ -96,14 +96,20 @@ pub struct KnownPaths {
     lookup: HashMap<String, KnownEntry>,
     trigger_names: HashSet<String>,
     protected: Vec<PathBuf>,
+    /// Every registration as a machine-independent identity, sorted.
+    rules: Vec<String>,
 }
 
 impl KnownPaths {
     /// Discover the well-known locations for this machine.
     #[must_use]
     pub fn discover() -> Self {
-        let home = dirs::home_dir();
-        let mut builder = Builder::new(home.clone());
+        Self::build(dirs::home_dir())
+    }
+
+    /// The registry this platform builds around `home`.
+    fn build(home: Option<PathBuf>) -> Self {
+        let mut builder = Builder::new(home);
 
         builder.common();
         #[cfg(windows)]
@@ -128,7 +134,23 @@ impl KnownPaths {
             lookup: HashMap::new(),
             trigger_names: HashSet::new(),
             protected: Vec::new(),
+            rules: Vec::new(),
         }
+    }
+
+    /// The registered locations as rules rather than paths, sorted.
+    ///
+    /// Each rule names where a location is anchored (`~`, `%LOCALAPPDATA%`,
+    /// the Downloads folder), the path beneath that anchor as written in the
+    /// registry, and what the registration does to the bytes inside: their
+    /// category, and whether the subtree is collapsed or claimed. No resolved
+    /// path appears, so two machines with different user names, or one whose
+    /// Downloads folder lives on another drive, produce the same list, and a
+    /// rule counts whether or not its location exists here. This is what the
+    /// scan's coverage stamp hashes.
+    #[must_use]
+    pub fn rules(&self) -> &[String] {
+        &self.rules
     }
 
     /// Look up a directory by path. `name_lower` must be the lowercased final
@@ -213,34 +235,126 @@ pub fn is_filesystem_root(path: &Path) -> bool {
     }
 }
 
+/// Where a well-known location is rooted.
+///
+/// A registration names its anchor rather than a resolved path so that the
+/// rule itself carries no machine-specific detail: see [`KnownPaths::rules`].
+#[derive(Debug, Clone, Copy)]
+enum Anchor {
+    /// The user's home directory.
+    Home,
+    /// The platform's Downloads folder, wherever the user has moved it.
+    Downloads,
+    /// The platform's Documents folder.
+    Documents,
+    /// The platform's Videos folder.
+    Videos,
+    /// The platform's Pictures folder.
+    Pictures,
+    /// The platform's Music folder.
+    Music,
+    /// `%LOCALAPPDATA%`.
+    #[cfg(windows)]
+    LocalAppData,
+    /// `%APPDATA%`.
+    #[cfg(windows)]
+    RoamingAppData,
+    /// A fixed absolute path, the same on every machine.
+    #[cfg(unix)]
+    Fixed(&'static str),
+}
+
+impl Anchor {
+    /// How the anchor is written in a rule identity.
+    fn tag(self) -> &'static str {
+        match self {
+            Anchor::Home => "~",
+            Anchor::Downloads => "{downloads}",
+            Anchor::Documents => "{documents}",
+            Anchor::Videos => "{videos}",
+            Anchor::Pictures => "{pictures}",
+            Anchor::Music => "{music}",
+            #[cfg(windows)]
+            Anchor::LocalAppData => "%LOCALAPPDATA%",
+            #[cfg(windows)]
+            Anchor::RoamingAppData => "%APPDATA%",
+            #[cfg(unix)]
+            Anchor::Fixed(path) => path,
+        }
+    }
+}
+
+/// Stands for the current user's login name inside a registered path.
+///
+/// Bazel names its output root after the user (`_bazel_<user>`), so that one
+/// path cannot be written down without it. The rule keeps the placeholder; the
+/// resolved path gets the name.
+const USER: &str = "{user}";
+
+/// The login name tools put into per-user paths, as Bazel reads it.
+fn login_name() -> Option<String> {
+    let variable = if cfg!(windows) { "USERNAME" } else { "USER" };
+    std::env::var(variable).ok().filter(|name| !name.is_empty())
+}
+
 /// Builder that assembles the well-known location registry.
 struct Builder {
     home: Option<PathBuf>,
+    user: Option<String>,
     entries: Vec<(PathBuf, Detection)>,
     protected: Vec<PathBuf>,
+    rules: Vec<String>,
 }
 
 impl Builder {
     fn new(home: Option<PathBuf>) -> Self {
         Builder {
             home,
+            user: login_name(),
             entries: Vec::new(),
             protected: Vec::new(),
+            rules: Vec::new(),
         }
     }
 
-    /// Register `base/rel` if `base` exists.
-    fn add(&mut self, base: Option<PathBuf>, rel: &str, detection: Detection) {
-        let Some(base) = base else { return };
-        let path = if rel.is_empty() {
-            base
-        } else {
-            let mut p = base;
-            for part in rel.split('/') {
-                p.push(part);
-            }
-            p
+    fn resolve(&self, anchor: Anchor) -> Option<PathBuf> {
+        match anchor {
+            Anchor::Home => self.home.clone(),
+            Anchor::Downloads => dirs::download_dir(),
+            Anchor::Documents => dirs::document_dir(),
+            Anchor::Videos => dirs::video_dir(),
+            Anchor::Pictures => dirs::picture_dir(),
+            Anchor::Music => dirs::audio_dir(),
+            #[cfg(windows)]
+            Anchor::LocalAppData => dirs::data_local_dir(),
+            #[cfg(windows)]
+            Anchor::RoamingAppData => dirs::data_dir(),
+            #[cfg(unix)]
+            Anchor::Fixed(path) => Some(PathBuf::from(path)),
+        }
+    }
+
+    /// Register `anchor/rel` when the anchor resolves on this machine.
+    ///
+    /// The rule is recorded either way: the registry's rules describe what
+    /// this build of Bloatrail knows, not what this machine happens to have.
+    fn add(&mut self, anchor: Anchor, rel: &str, detection: Detection) {
+        self.rules.push(rule_identity(anchor, rel, &detection));
+
+        let Some(mut path) = self.resolve(anchor) else {
+            return;
         };
+        if !rel.is_empty() {
+            let rel = if rel.contains(USER) {
+                let Some(user) = &self.user else { return };
+                rel.replace(USER, user)
+            } else {
+                rel.to_string()
+            };
+            for part in rel.split('/') {
+                path.push(part);
+            }
+        }
         self.entries.push((path, detection));
     }
 
@@ -269,6 +383,8 @@ impl Builder {
             }
             lookup.insert(normalise_key(&path), KnownEntry { detection });
         }
+        let mut rules = self.rules;
+        rules.sort_unstable();
         KnownPaths {
             home: self.home.clone(),
             downloads: dirs::download_dir(),
@@ -277,6 +393,7 @@ impl Builder {
             lookup,
             trigger_names,
             protected: self.protected,
+            rules,
         }
     }
 
@@ -295,8 +412,8 @@ impl Builder {
 
         // ---- Rust -------------------------------------------------------
         self.add(
-            self.home_rel(".cargo/registry"),
-            "",
+            Anchor::Home,
+            ".cargo/registry",
             cache(
                 Category::PackageCache,
                 Technology::Rust,
@@ -311,8 +428,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".cargo/git"),
-            "",
+            Anchor::Home,
+            ".cargo/git",
             cache(
                 Category::PackageCache,
                 Technology::Rust,
@@ -323,8 +440,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".rustup/toolchains"),
-            "",
+            Anchor::Home,
+            ".rustup/toolchains",
             cache(
                 Category::Application,
                 Technology::Rust,
@@ -339,8 +456,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".rustup/downloads"),
-            "",
+            Anchor::Home,
+            ".rustup/downloads",
             cache(
                 Category::Cache,
                 Technology::Rust,
@@ -353,8 +470,8 @@ impl Builder {
 
         // ---- JavaScript -------------------------------------------------
         self.add(
-            self.home_rel(".npm/_cacache"),
-            "",
+            Anchor::Home,
+            ".npm/_cacache",
             cache(
                 Category::PackageCache,
                 Technology::Node,
@@ -366,8 +483,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".yarn/berry/cache"),
-            "",
+            Anchor::Home,
+            ".yarn/berry/cache",
             cache(
                 Category::PackageCache,
                 Technology::Node,
@@ -381,8 +498,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".cache/yarn"),
-            "",
+            Anchor::Home,
+            ".cache/yarn",
             cache(
                 Category::PackageCache,
                 Technology::Node,
@@ -392,10 +509,10 @@ impl Builder {
             .regenerated_by("yarn cache clean")
             .collapsed(),
         );
-        self.add(self.home_rel(".pnpm-store"), "", pnpm_store());
+        self.add(Anchor::Home, ".pnpm-store", pnpm_store());
         self.add(
-            self.home_rel(".bun/install/cache"),
-            "",
+            Anchor::Home,
+            ".bun/install/cache",
             cache(
                 Category::PackageCache,
                 Technology::Bun,
@@ -405,8 +522,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".deno"),
-            "",
+            Anchor::Home,
+            ".deno",
             cache(
                 Category::PackageCache,
                 Technology::Deno,
@@ -417,8 +534,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".node-gyp"),
-            "",
+            Anchor::Home,
+            ".node-gyp",
             cache(
                 Category::Cache,
                 Technology::Node,
@@ -428,8 +545,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".electron"),
-            "",
+            Anchor::Home,
+            ".electron",
             cache(
                 Category::Cache,
                 Technology::Node,
@@ -441,8 +558,8 @@ impl Builder {
 
         // ---- Python -----------------------------------------------------
         self.add(
-            self.home_rel(".cache/pip"),
-            "",
+            Anchor::Home,
+            ".cache/pip",
             cache(
                 Category::PackageCache,
                 Technology::Python,
@@ -453,8 +570,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".cache/uv"),
-            "",
+            Anchor::Home,
+            ".cache/uv",
             cache(
                 Category::PackageCache,
                 Technology::Python,
@@ -465,8 +582,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".cache/pypoetry"),
-            "",
+            Anchor::Home,
+            ".cache/pypoetry",
             cache(
                 Category::PackageCache,
                 Technology::Python,
@@ -482,8 +599,8 @@ impl Builder {
             "miniforge3/pkgs",
         ] {
             self.add(
-                self.home_rel(conda),
-                "",
+                Anchor::Home,
+                conda,
                 cache(
                     Category::PackageCache,
                     Technology::Python,
@@ -497,8 +614,8 @@ impl Builder {
 
         // ---- JVM / Android ----------------------------------------------
         self.add(
-            self.home_rel(".m2/repository"),
-            "",
+            Anchor::Home,
+            ".m2/repository",
             cache(
                 Category::PackageCache,
                 Technology::Maven,
@@ -512,8 +629,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".gradle/caches"),
-            "",
+            Anchor::Home,
+            ".gradle/caches",
             cache(
                 Category::PackageCache,
                 Technology::Gradle,
@@ -524,8 +641,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".gradle/daemon"),
-            "",
+            Anchor::Home,
+            ".gradle/daemon",
             cache(
                 Category::Log,
                 Technology::Gradle,
@@ -535,8 +652,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".android/avd"),
-            "",
+            Anchor::Home,
+            ".android/avd",
             cache(
                 Category::VirtualMachine,
                 Technology::Android,
@@ -548,8 +665,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".gradle/wrapper"),
-            "",
+            Anchor::Home,
+            ".gradle/wrapper",
             cache(
                 Category::PackageCache,
                 Technology::Gradle,
@@ -561,8 +678,8 @@ impl Builder {
 
         // ---- .NET / Go / others -----------------------------------------
         self.add(
-            self.home_rel(".nuget/packages"),
-            "",
+            Anchor::Home,
+            ".nuget/packages",
             cache(
                 Category::PackageCache,
                 Technology::DotNet,
@@ -573,8 +690,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel("go/pkg/mod"),
-            "",
+            Anchor::Home,
+            "go/pkg/mod",
             cache(
                 Category::PackageCache,
                 Technology::Go,
@@ -586,8 +703,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".cache/go-build"),
-            "",
+            Anchor::Home,
+            ".cache/go-build",
             cache(
                 Category::Cache,
                 Technology::Go,
@@ -598,8 +715,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".cargo/bin"),
-            "",
+            Anchor::Home,
+            ".cargo/bin",
             cache(
                 Category::Application,
                 Technology::Rust,
@@ -609,8 +726,8 @@ impl Builder {
             .with_evidence("These are tools you installed with `cargo install`."),
         );
         self.add(
-            self.home_rel(".cache/composer"),
-            "",
+            Anchor::Home,
+            ".cache/composer",
             cache(
                 Category::PackageCache,
                 Technology::Php,
@@ -620,8 +737,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".terraform.d/plugin-cache"),
-            "",
+            Anchor::Home,
+            ".terraform.d/plugin-cache",
             cache(
                 Category::PackageCache,
                 Technology::Terraform,
@@ -638,8 +755,8 @@ impl Builder {
             (".cache/Cypress", "Cypress binary cache"),
         ] {
             self.add(
-                self.home_rel(rel),
-                "",
+                Anchor::Home,
+                rel,
                 cache(
                     Category::Cache,
                     Technology::Node,
@@ -658,8 +775,8 @@ impl Builder {
             (".cache/torch", "PyTorch model cache"),
         ] {
             self.add(
-                self.home_rel(rel),
-                "",
+                Anchor::Home,
+                rel,
                 cache(
                     Category::Cache,
                     Technology::Python,
@@ -677,8 +794,8 @@ impl Builder {
 
         // ---- Containers ---------------------------------------------------
         self.add(
-            self.home_rel(".docker"),
-            "",
+            Anchor::Home,
+            ".docker",
             cache(
                 Category::ContainerData,
                 Technology::Docker,
@@ -691,7 +808,7 @@ impl Builder {
 
         // ---- User content --------------------------------------------------
         self.add(
-            dirs::download_dir(),
+            Anchor::Downloads,
             "",
             Detection::new(
                 Category::Download,
@@ -708,7 +825,7 @@ impl Builder {
             .with_specificity(60),
         );
         self.add(
-            dirs::document_dir(),
+            Anchor::Documents,
             "",
             Detection::new(
                 Category::Document,
@@ -721,7 +838,7 @@ impl Builder {
             .with_specificity(60),
         );
         self.add(
-            dirs::video_dir(),
+            Anchor::Videos,
             "",
             Detection::new(
                 Category::Video,
@@ -733,7 +850,7 @@ impl Builder {
             .with_specificity(60),
         );
         self.add(
-            dirs::picture_dir(),
+            Anchor::Pictures,
             "",
             Detection::new(
                 Category::Image,
@@ -745,7 +862,7 @@ impl Builder {
             .with_specificity(60),
         );
         self.add(
-            dirs::audio_dir(),
+            Anchor::Music,
             "",
             Detection::new(
                 Category::Audio,
@@ -760,15 +877,12 @@ impl Builder {
 
     #[cfg(windows)]
     fn windows(&mut self) {
-        let local = dirs::data_local_dir();
-        let roaming = dirs::data_dir();
-
         self.protect(Some(PathBuf::from(r"C:\Windows")));
         self.protect(Some(PathBuf::from(r"C:\Program Files")));
         self.protect(Some(PathBuf::from(r"C:\Program Files (x86)")));
 
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "Temp",
             cache(
                 Category::Temporary,
@@ -783,7 +897,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "npm-cache",
             cache(
                 Category::PackageCache,
@@ -794,9 +908,9 @@ impl Builder {
             .regenerated_by("npm cache clean --force")
             .collapsed(),
         );
-        self.add(local.clone(), "pnpm/store", pnpm_store());
+        self.add(Anchor::LocalAppData, "pnpm/store", pnpm_store());
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "Yarn/Cache",
             cache(
                 Category::PackageCache,
@@ -807,7 +921,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "pip/Cache",
             cache(
                 Category::PackageCache,
@@ -819,7 +933,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "uv/cache",
             cache(
                 Category::PackageCache,
@@ -830,7 +944,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "ms-playwright",
             cache(
                 Category::Cache,
@@ -841,7 +955,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "Docker/wsl",
             cache(
                 Category::ContainerData,
@@ -858,7 +972,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "Docker",
             cache(
                 Category::ContainerData,
@@ -869,7 +983,7 @@ impl Builder {
             .with_reclaim(Reclaim::External),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "CrashDumps",
             cache(
                 Category::Temporary,
@@ -880,7 +994,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "JetBrains",
             cache(
                 Category::Cache,
@@ -892,7 +1006,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "Microsoft/VisualStudio",
             cache(
                 Category::Cache,
@@ -903,7 +1017,7 @@ impl Builder {
             .with_evidence("Also contains per-user settings, not only regenerable caches."),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "NuGet/v3-cache",
             cache(
                 Category::PackageCache,
@@ -915,7 +1029,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local.clone(),
+            Anchor::LocalAppData,
             "Microsoft/Windows/INetCache",
             cache(
                 Category::Cache,
@@ -926,7 +1040,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            roaming.clone(),
+            Anchor::RoamingAppData,
             "Code/CachedData",
             cache(
                 Category::Cache,
@@ -937,7 +1051,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            roaming,
+            Anchor::RoamingAppData,
             "Code/Cache",
             cache(
                 Category::Cache,
@@ -948,7 +1062,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            local,
+            Anchor::LocalAppData,
             "Temp/chocolatey",
             cache(
                 Category::PackageCache,
@@ -967,8 +1081,8 @@ impl Builder {
         self.protect(Some(PathBuf::from("/Applications")));
 
         self.add(
-            self.home_rel("Library/Developer/Xcode/DerivedData"),
-            "",
+            Anchor::Home,
+            "Library/Developer/Xcode/DerivedData",
             cache(
                 Category::BuildArtifact,
                 Technology::Xcode,
@@ -979,8 +1093,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel("Library/Developer/Xcode/Archives"),
-            "",
+            Anchor::Home,
+            "Library/Developer/Xcode/Archives",
             cache(
                 Category::Archive,
                 Technology::Xcode,
@@ -992,8 +1106,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel("Library/Developer/Xcode/iOS DeviceSupport"),
-            "",
+            Anchor::Home,
+            "Library/Developer/Xcode/iOS DeviceSupport",
             cache(
                 Category::Cache,
                 Technology::Xcode,
@@ -1004,8 +1118,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel("Library/Developer/CoreSimulator/Devices"),
-            "",
+            Anchor::Home,
+            "Library/Developer/CoreSimulator/Devices",
             cache(
                 Category::VirtualMachine,
                 Technology::Xcode,
@@ -1018,8 +1132,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel("Library/Caches/Homebrew"),
-            "",
+            Anchor::Home,
+            "Library/Caches/Homebrew",
             cache(
                 Category::PackageCache,
                 Technology::Homebrew,
@@ -1030,8 +1144,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel("Library/Caches/JetBrains"),
-            "",
+            Anchor::Home,
+            "Library/Caches/JetBrains",
             cache(
                 Category::Cache,
                 Technology::JetBrains,
@@ -1041,8 +1155,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel("Library/Caches"),
-            "",
+            Anchor::Home,
+            "Library/Caches",
             cache(
                 Category::Cache,
                 Technology::System,
@@ -1055,8 +1169,8 @@ impl Builder {
             ),
         );
         self.add(
-            self.home_rel("Library/Containers/com.docker.docker/Data"),
-            "",
+            Anchor::Home,
+            "Library/Containers/com.docker.docker/Data",
             cache(
                 Category::ContainerData,
                 Technology::Docker,
@@ -1068,8 +1182,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".Trash"),
-            "",
+            Anchor::Home,
+            ".Trash",
             cache(
                 Category::Temporary,
                 Technology::System,
@@ -1091,8 +1205,8 @@ impl Builder {
         self.protect(Some(PathBuf::from("/nix/store")));
 
         self.add(
-            self.home_rel(".cache"),
-            "",
+            Anchor::Home,
+            ".cache",
             cache(
                 Category::Cache,
                 Technology::System,
@@ -1102,8 +1216,8 @@ impl Builder {
             .with_evidence("Applications regenerate their caches, though some do so slowly."),
         );
         self.add(
-            self.home_rel(".local/share/Trash"),
-            "",
+            Anchor::Home,
+            ".local/share/Trash",
             cache(
                 Category::Temporary,
                 Technology::System,
@@ -1114,8 +1228,8 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            self.home_rel(".local/share/containers"),
-            "",
+            Anchor::Home,
+            ".local/share/containers",
             cache(
                 Category::ContainerData,
                 Technology::Docker,
@@ -1127,7 +1241,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            Some(PathBuf::from("/var/lib/docker")),
+            Anchor::Fixed("/var/lib/docker"),
             "",
             cache(
                 Category::ContainerData,
@@ -1141,7 +1255,7 @@ impl Builder {
             .collapsed(),
         );
         self.add(
-            Some(PathBuf::from("/var/log")),
+            Anchor::Fixed("/var/log"),
             "",
             cache(
                 Category::Log,
@@ -1153,8 +1267,8 @@ impl Builder {
             .with_reclaim(Reclaim::External),
         );
         self.add(
-            self.home_rel(".var/app"),
-            "",
+            Anchor::Home,
+            ".var/app",
             cache(
                 Category::Application,
                 Technology::System,
@@ -1164,8 +1278,8 @@ impl Builder {
             .with_reclaim(Reclaim::External),
         );
         self.add(
-            self.home_rel("snap"),
-            "",
+            Anchor::Home,
+            "snap",
             cache(
                 Category::Application,
                 Technology::System,
@@ -1175,6 +1289,29 @@ impl Builder {
             .with_reclaim(Reclaim::External),
         );
     }
+}
+
+/// One registration, written so that only a change in what Bloatrail knows can
+/// change it: the anchor, the path under it as written, and what the rule does
+/// to the bytes beneath — their category, and whether the subtree is collapsed
+/// (which decides the directories a snapshot can list) or merely claimed.
+/// Wording, evidence and cleanup advice are left out; they change what a report
+/// says, not what a scan counts.
+fn rule_identity(anchor: Anchor, rel: &str, detection: &Detection) -> String {
+    let scope = if detection.collapse {
+        "collapse"
+    } else if detection.claims_contents {
+        "claim"
+    } else {
+        "name"
+    };
+    let tag = anchor.tag();
+    let location = if rel.is_empty() {
+        tag.to_string()
+    } else {
+        format!("{tag}/{rel}")
+    };
+    format!("{location} {} {scope}", detection.category.id())
 }
 
 /// Shorthand for a known-location detection.
@@ -1251,6 +1388,38 @@ mod tests {
             assert!(known.is_protected(&home), "home must be protected");
             assert_eq!(known.display(&home), "~");
         }
+    }
+
+    #[test]
+    fn rules_name_anchors_never_resolved_paths() {
+        let here = KnownPaths::build(Some(PathBuf::from("/home/alice-unique")));
+        let there = KnownPaths::build(Some(PathBuf::from("/srv/people/bob-unique")));
+        let nowhere = KnownPaths::build(None);
+
+        assert!(!here.rules().is_empty());
+        assert_eq!(
+            here.rules(),
+            there.rules(),
+            "where home is must not change the rules"
+        );
+        assert_eq!(
+            here.rules(),
+            nowhere.rules(),
+            "a rule counts whether or not it resolves on this machine"
+        );
+        assert!(
+            here.rules()
+                .iter()
+                .all(|rule| !rule.contains("alice-unique")),
+            "no resolved path may appear in a rule"
+        );
+        assert!(here.rules().windows(2).all(|pair| pair[0] <= pair[1]));
+        assert!(
+            here.rules()
+                .iter()
+                .any(|rule| rule == "~/.cargo/registry package_cache collapse"),
+            "a rule names its anchor, its path, its category and its scope"
+        );
     }
 
     #[test]
