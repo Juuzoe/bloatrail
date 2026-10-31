@@ -56,8 +56,8 @@ rm -rf ~/Projects
 
 The seeded history lives in Bloatrail's data directory
 (`%APPDATA%\bloatrail`, `~/Library/Application Support/bloatrail`, or
-`$XDG_DATA_HOME/bloatrail`) and is pruned to the newest 20 snapshots per
-directory on its own. Setting `BLOATRAIL_HOME` to a scratch directory before
+`$XDG_DATA_HOME/bloatrail`) and is thinned by age on its own: every snapshot
+from the last week, one a day for a month, one a week for a year. Setting `BLOATRAIL_HOME` to a scratch directory before
 recording keeps it out of your real store entirely:
 
 ```bash

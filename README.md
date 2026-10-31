@@ -279,7 +279,8 @@ The forecast follows the same rules as everything else here:
 - **A distant date is not a date.** More than a year out, the trend will not
   survive its own horizon, and the report says that instead.
 
-Growth accumulates on its own: every `scan` and `diff` adds a point. There is
+Growth accumulates on its own: every `scan`, `diff` and desktop-app scan adds
+a point. There is
 nothing to set up, no daemon, and `--no-record` opts any scan out. The first
 run says so instead of pretending: growth is measured between scans, so the
 report starts when the second one lands. `bloatrail diff` remains the quick
@@ -332,6 +333,14 @@ Each row carries its category and its age, because the age answers the question
 the size raises: is this still in use?
 
 ![The Largest files view, a ranked table of file paths with sizes, categories and modification ages](https://raw.githubusercontent.com/Juuzoe/bloatrail/main/docs/screenshots/largest.png)
+
+### See what grew
+
+Every finished scan in the app is recorded in the same history the CLI keeps,
+so the **Growth** view and `bloatrail growth` read one record. It shows each
+recorded scan with the free space at the time, what grew by category and by
+directory, and the projected date under the same rules as the CLI. A scan you
+stop early is not recorded.
 
 Build the app with:
 

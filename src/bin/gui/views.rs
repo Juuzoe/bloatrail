@@ -1201,7 +1201,9 @@ fn change_rows(growth: &Growth, bundle: &Bundle, ui: &mut egui::Ui) {
                     .color(safety_color(detection.cleanup, dark))
                     .small()
             });
-            let label = mono(bloatrail::output::elide_start(&change.label, 64)).small();
+            // Full size, like the paths in the other views: the directory is
+            // the subject of the row, and only the annotation is secondary.
+            let label = mono(bloatrail::output::elide_start(&change.label, 64));
             change_row(ui, label, change.delta, note);
         }
         hidden_note(ui, growth.directories.len() - directories.len());
